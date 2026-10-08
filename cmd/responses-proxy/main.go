@@ -24,14 +24,25 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-// run validates the command line and dispatches either service startup or a key reload.
+// run dispatches the command to its handler.
 func run(args []string) int {
-	if len(args) != 2 || args[1] == "" {
+	if len(args) == 0 {
 		usage()
 		return 2
 	}
-	command := args[0]
-	if command != "serve" && command != "reload-keys" {
+	switch args[0] {
+	case "serve", "reload-keys":
+		return runService(args)
+	case "version":
+		return runPrintVersion(args[1:])
+	default:
+		usage()
+		return 2
+	}
+}
+
+func runService(args []string) int {
+	if len(args) != 2 || args[1] == "" {
 		usage()
 		return 2
 	}
@@ -40,19 +51,29 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 1
 	}
-	if command == "reload-keys" {
+	switch args[0] {
+	case "serve":
+		if err := serve(cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "service error:", err)
+			return 1
+		}
+	case "reload-keys":
 		// Use the existing private control socket; this command does not start another proxy instance.
 		if err := admin.Reload(cfg.StateDir); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 		fmt.Fprintln(os.Stdout, "API keys reloaded")
-		return 0
 	}
-	if err := serve(cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "service error:", err)
-		return 1
+	return 0
+}
+
+func runPrintVersion(args []string) int {
+	if len(args) != 0 {
+		usage()
+		return 2
 	}
+	printVersion()
 	return 0
 }
 
@@ -210,4 +231,5 @@ func serve(cfg config.Config) error {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: responses-proxy serve CONFIG")
 	fmt.Fprintln(os.Stderr, "       responses-proxy reload-keys CONFIG")
+	fmt.Fprintln(os.Stderr, "       responses-proxy version")
 }

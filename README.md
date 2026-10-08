@@ -4,12 +4,15 @@ OpenAI Responses Proxy is a small HTTP proxy for the OpenAI Responses API. It au
 
 ## Build and run
 
-Build the service from the repository root with Go 1.24 or newer:
+Build the service with Go 1.24 or newer by running the script from the repository root:
 
 ```sh
-mkdir -p bin
-go build -o bin/responses-proxy ./cmd/responses-proxy
+./scripts/build.sh
 ```
+
+The script writes `bin/responses-proxy` and embeds the exact tag at `HEAD`, or the abbreviated commit ID when `HEAD` has no tag. Without usable Git metadata, it uses version `dev`. It appends `-dev` when the worktree has staged, unstaged, or nonignored untracked changes. The reported build time is captured in UTC when the script starts. Run `bin/responses-proxy version` to display the version, full commit ID, build time, and Go version. Direct `go build` remains available; builds that do not set linker metadata report version `dev` and build time `unknown`.
+
+The build script can also be run from another working directory by invoking it through its path, for example `/path/to/openai-responses-proxy/scripts/build.sh`.
 
 Copy the example files to a private directory as `proxy.yaml` and `users.yaml`. Put the upstream API key and local user keys in those private files, then restrict their permissions:
 

@@ -23,3 +23,27 @@
 **Evidence:** Save the three mock call records, authentication status codes, and accounting result grouped by user. Verify there are no extra upstream calls from invalid authentication.
 
 **Cleanup:** Stop processes and remove this case's local files.
+
+## Case 3: Build metadata and command arguments
+
+**Setup:** Use a disposable copy of the source checkout for the Git-state checks and refer to its path as `$checkout`. Build the proxy with `$checkout/scripts/build.sh` from a directory outside that copy. Keep the default `bin/` build output ignored.
+
+**Actions:** Run `$checkout/bin/responses-proxy version` and record its output twice without rebuilding. In the disposable checkout, build once with `HEAD` at an exact tag and once with an untagged commit that has a tagged ancestor. Separately build with one staged change, one unstaged tracked change, and one nonignored untracked file; restore the clean state between checks. Build again with only ignored files under `bin/`. Run `$checkout/bin/responses-proxy version extra`, `$checkout/bin/responses-proxy serve`, and `$checkout/bin/responses-proxy reload-keys`.
+
+**Expected:** The version command works without a config argument and reports `Version:`, `Commit:`, `Build time:`, and `Go version:`. Repeated runs of the same binary report the same build time. The version is the exact tag at `HEAD`, or the abbreviated current commit when `HEAD` is untagged; it never substitutes a nearby ancestor tag. If multiple exact tags point to `HEAD`, the selected tag follows Git's standard selection. Each staged, unstaged, or nonignored untracked change adds `-dev`, while ignored `bin/` outputs do not. The commit is the full revision when Git metadata is available. The build time is UTC in `YYYY-MM-DDTHH:MM:SSZ` form. Invalid or incomplete positional commands return status 2 and print usage.
+
+**Evidence:** Save the version output for each clean/dirty state and the status and usage output for the invalid commands. Do not record unrelated source contents.
+
+**Cleanup:** Remove the disposable checkout and its generated binaries.
+
+## Case 4: Source archive and direct build defaults
+
+**Setup:** Use a source-only archive with no Git metadata, refer to its extracted path as `$archive`, and use Go 1.24 or newer.
+
+**Actions:** Run `$archive/scripts/build.sh` and then `$archive/bin/responses-proxy version`. Also build the proxy directly with `go build -o bin/responses-proxy-direct ./cmd/responses-proxy` from the source root and run `bin/responses-proxy-direct version`.
+
+**Expected:** The scripted source-archive build reports `Version: dev`, an unknown full commit, a UTC build time, and the embedded Go version. The direct build remains usable and reports the default `Version: dev` and `Build time: unknown` values.
+
+**Evidence:** Save the four reported metadata fields for both binaries and confirm the direct build exits successfully.
+
+**Cleanup:** Remove the extracted archive and generated binaries.

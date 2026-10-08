@@ -4,13 +4,15 @@ These are hands-on test specifications, not a unit-test suite or an automated te
 
 ## Build the binaries
 
-Run from the repository root:
+Run the commands from the repository root. The proxy build script itself can also be invoked by its path from another working directory:
 
 ```sh
+./scripts/build.sh
 mkdir -p bin manual-test-state
-go build -o bin/responses-proxy ./cmd/responses-proxy
 go build -o bin/mock-upstream ./cmd/mock-upstream
 ```
+
+The proxy's build script embeds version info.
 
 The mock has an upstream listener and a separate loopback-only control listener. Start it in a terminal:
 
