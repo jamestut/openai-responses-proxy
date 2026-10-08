@@ -39,6 +39,9 @@ def parse_args():
     parser = SafeArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8080", metavar="BASE_URL", help="proxy root URL")
     parser.add_argument("-g", "--group-by", choices=("model", "user", "model,user"), metavar="GROUP_BY", help="model, user, or model,user")
+    token_format = parser.add_mutually_exclusive_group()
+    token_format.add_argument("--human", action="store_true", help="format token counts with k/M/B/T suffixes")
+    token_format.add_argument("--raw", action="store_true", help="print token counts without separators")
     parser.add_argument("-m", "--model")
     parser.add_argument("-u", "--user")
     parser.add_argument("-p", "--period", help="YYYY, YYYY-MM, or YYYY-MM-DD")
@@ -109,29 +112,56 @@ def group_value(group, key):
     return value
 
 
-def render_summary(summary, indent):
+def format_token_count(value, token_format):
+    if token_format == "raw":
+        return str(value)
+    if token_format == "comma":
+        return f"{value:,}"
+
+    magnitude = abs(value)
+    if magnitude >= 1_000_000_000_000_000:
+        return f"{value:,}"
+    if magnitude < 1_000:
+        return str(value)
+
+    units = ((1_000, "k"), (1_000_000, "M"), (1_000_000_000, "B"), (1_000_000_000_000, "T"))
+    unit_index = max(index for index, (divisor, _) in enumerate(units) if magnitude >= divisor)
+    divisor, suffix = units[unit_index]
+    number = f"{magnitude / divisor:.1f}"
+    if number.endswith(".0"):
+        number = number[:-2]
+    if number == "1000" and unit_index < len(units) - 1:
+        divisor, suffix = units[unit_index + 1]
+        number = f"{magnitude / divisor:.1f}"
+        if number.endswith(".0"):
+            number = number[:-2]
+    sign = "-" if value < 0 else ""
+    return f"{sign}{number} {suffix}"
+
+
+def render_summary(summary, indent, token_format):
     values = summary_values(summary)
     lines = [
         f"{indent}- Requests: {values['request_count']}",
         f"{indent}- Tokens:",
-        f"{indent}  - Input: {values['input_tokens']}",
-        f"{indent}    - Cached: {values['cached_tokens']}",
-        f"{indent}    - Written to cache: {values['cache_write_tokens']}",
-        f"{indent}  - Output: {values['output_tokens']}",
-        f"{indent}    - Reasoning: {values['reasoning_tokens']}",
-        f"{indent}  - Total: {values['total_tokens']}",
+        f"{indent}  - Input: {format_token_count(values['input_tokens'], token_format)}",
+        f"{indent}    - Cached: {format_token_count(values['cached_tokens'], token_format)}",
+        f"{indent}    - Written to cache: {format_token_count(values['cache_write_tokens'], token_format)}",
+        f"{indent}  - Output: {format_token_count(values['output_tokens'], token_format)}",
+        f"{indent}    - Reasoning: {format_token_count(values['reasoning_tokens'], token_format)}",
+        f"{indent}  - Total: {format_token_count(values['total_tokens'], token_format)}",
         f"{indent}- Pending requests: {values['pending_count']}",
         f"{indent}- Incomplete requests: {values['incomplete_count']}",
     ]
     return lines
 
 
-def render_report(report, group_by):
+def render_report(report, group_by, token_format):
     if not isinstance(report, dict):
         raise ValueError("proxy returned an invalid accounting response")
     lines = ["Accounting summary"]
     if group_by is None:
-        lines.extend(render_summary(report.get("totals"), ""))
+        lines.extend(render_summary(report.get("totals"), "", token_format))
         return lines
 
     groups = [] if report == {} else report.get("groups")
@@ -147,12 +177,12 @@ def render_report(report, group_by):
         groups.sort(key=lambda item: group_value(item, "user"))
         for group in groups:
             lines.append(f"- User: {group_value(group, 'user')}")
-            lines.extend(render_summary(group, "  "))
+            lines.extend(render_summary(group, "  ", token_format))
     elif group_by == "model":
         groups.sort(key=lambda item: group_value(item, "model"))
         for group in groups:
             lines.append(f"- Model: {group_value(group, 'model')}")
-            lines.extend(render_summary(group, "  "))
+            lines.extend(render_summary(group, "  ", token_format))
     else:
         groups.sort(key=lambda item: (group_value(item, "user"), group_value(item, "model")))
         current_user = None
@@ -162,7 +192,7 @@ def render_report(report, group_by):
                 lines.append(f"- User: {user}")
                 current_user = user
             lines.append(f"  - Model: {group_value(group, 'model')}")
-            lines.extend(render_summary(group, "    "))
+            lines.extend(render_summary(group, "    ", token_format))
     return lines
 
 
@@ -184,7 +214,8 @@ def main():
     try:
         url = endpoint_url(args.base_url, params)
         report = request_report(url, api_key)
-        lines = render_report(report, args.group_by)
+        token_format = "human" if args.human else "raw" if args.raw else "comma"
+        lines = render_report(report, args.group_by, token_format)
     except (ValueError, RuntimeError) as exc:
         print(f"query_accounting.py: {exc}", file=sys.stderr)
         return 1
