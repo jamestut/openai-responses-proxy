@@ -1,0 +1,8 @@
+users:
+  - name: alice
+    api_keys:
+      - sk-user-example-alice
+      - sk-user-example-alice-rotation
+  - name: bob
+    api_keys:
+      - sk-user-example-bob

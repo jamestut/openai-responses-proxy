@@ -1,0 +1,24 @@
+listen: 127.0.0.1:8080
+upstream:
+  base_url: https://api.openai.com/v1
+  api_key: replace-with-your-upstream-api-key
+  # Optional private CA bundle; upstream certificates are always verified.
+  # ca_file: ./upstream-ca.pem
+users_file: ./users.yaml
+state_dir: ./state
+retry:
+  delay: 30s
+  max_retries: 5
+timeouts:
+  connect: 10s
+  tls_handshake: 10s
+  response_header: 0s
+  total_request: 0s
+  shutdown: 15s
+logging:
+  level: upstream_errors
+  destination: stdout
+max_request_body_bytes: 67108864
+background:
+  poll_interval: 2s
+  max_concurrent: 4
