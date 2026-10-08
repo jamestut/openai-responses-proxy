@@ -43,7 +43,7 @@ The response includes per-method/path call counts and a timestamped record for e
 Use a test-only key and isolated state directory. `retry.delay` should be short for retry scenarios, for example `1s`; leave `max_retries: 5` unless a scenario says otherwise. Start the proxy with:
 
 ```sh
-bin/responses-proxy serve --config manual-test-state/proxy.local.yaml
+bin/responses-proxy serve manual-test-state/proxy.local.yaml
 ```
 
 The sample files under `examples/` provide the current YAML structure. For this fixture, set `upstream.base_url` to `http://127.0.0.1:19090/v1`, set `upstream.api_key: mock-upstream-key`, set `users_file: ./users.yaml` with `alice` / `test-alice-key` and `bob` / `test-bob-key`, and set `state_dir: ./state`. Use `listen: 127.0.0.1:8080`. These relative paths resolve from `manual-test-state/proxy.local.yaml`. Local configuration and database paths are ignored by Git.

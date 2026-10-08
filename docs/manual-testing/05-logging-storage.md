@@ -16,7 +16,7 @@
 
 **Setup:** Start a fresh mock and proxy. Use `alice` / `test-alice-old`, `bob` / `test-bob-key`, and a private `state_dir`. Confirm directory and socket permissions with `stat` after startup.
 
-**Actions:** Replace Alice's key in the users file with `test-alice-new`, add a second key for her, then run `responses-proxy reload-keys --config ...`. Test old and new keys. Next write a malformed users file containing a duplicate key, run reload again, and test the last valid key map. Queue a delayed 200 response. Start a create request with Bob's key, wait until the mock records receipt, remove Bob from the users file, reload, and let the in-flight request finish. Test Bob's key on a new request and query accounting by user.
+**Actions:** Replace Alice's key in the users file with `test-alice-new`, add a second key for her, then run `bin/responses-proxy reload-keys manual-test-state/proxy.local.yaml`. Test old and new keys. Next write a malformed users file containing a duplicate key, run reload again, and test the last valid key map. Queue a delayed 200 response. Start a create request with Bob's key, wait until the mock records receipt, remove Bob from the users file, reload, and let the in-flight request finish. Test Bob's key on a new request and query accounting by user.
 
 **Expected:** A valid reload exits successfully and atomically activates new keys; removed keys stop authenticating and new keys work. A malformed reload exits nonzero and retains the prior valid map. New requests after Bob's removal fail authentication, while the already-authenticated request completes and remains attributed to Bob. The state directory is mode `0700` and the Unix reload socket is mode `0600`.
 

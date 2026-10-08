@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -27,7 +26,7 @@ func main() {
 
 // run validates the command line and dispatches either service startup or a key reload.
 func run(args []string) int {
-	if len(args) == 0 {
+	if len(args) != 2 || args[1] == "" {
 		usage()
 		return 2
 	}
@@ -36,17 +35,7 @@ func run(args []string) int {
 		usage()
 		return 2
 	}
-	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	configPath := flags.String("config", "", "path to the main YAML configuration")
-	if err := flags.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if flags.NArg() != 0 || *configPath == "" {
-		usage()
-		return 2
-	}
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		return 1
@@ -219,5 +208,6 @@ func serve(cfg config.Config) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: responses-proxy <serve|reload-keys> --config PATH")
+	fmt.Fprintln(os.Stderr, "usage: responses-proxy serve CONFIG")
+	fmt.Fprintln(os.Stderr, "       responses-proxy reload-keys CONFIG")
 }

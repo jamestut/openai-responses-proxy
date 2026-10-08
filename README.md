@@ -19,7 +19,7 @@ cp examples/users.example.yaml /path/to/users.yaml
 chmod 600 /path/to/proxy.yaml /path/to/users.yaml
 ```
 
-Start the service with `bin/responses-proxy serve --config /path/to/proxy.yaml`. The default listener is `127.0.0.1:8080`; set `listen` to a different address in the configuration if needed. The listener uses plain HTTP, so protect it with a trusted network boundary when clients connect remotely.
+Start the service with `bin/responses-proxy serve /path/to/proxy.yaml`. The default listener is `127.0.0.1:8080`; set `listen` to a different address in the configuration if needed. The listener uses plain HTTP, so protect it with a trusted network boundary when clients connect remotely.
 
 The proxy forwards requests to the configured upstream base URL. The example points to `https://api.openai.com/v1`; upstream HTTPS certificates and hostnames are verified. A private CA can be trusted with `upstream.ca_file`.
 
@@ -30,7 +30,7 @@ The users YAML file maps each username to one or more Bearer keys. A client send
 To reload keys without restarting the service, update the users YAML file and run:
 
 ```sh
-bin/responses-proxy reload-keys --config /path/to/proxy.yaml
+bin/responses-proxy reload-keys /path/to/proxy.yaml
 ```
 
 The running service rereads and validates the complete file through a private Unix socket under `state_dir`. A valid file replaces the active key map atomically. A malformed or unreadable file leaves the active keys in place and makes the command fail. Requests already authenticated keep their original username; new requests use the reloaded keys. Changes to the main configuration require a restart.
