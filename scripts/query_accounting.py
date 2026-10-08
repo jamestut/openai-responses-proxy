@@ -37,14 +37,14 @@ class NoRedirectHandler(HTTPRedirectHandler):
 
 def parse_args():
     parser = SafeArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--base-url", default="http://127.0.0.1:8080", help="proxy root URL")
-    parser.add_argument("--group-by", choices=("model", "user", "model,user"), metavar="GROUP_BY", help="model, user, or model,user")
-    parser.add_argument("--model")
-    parser.add_argument("--user")
-    parser.add_argument("--period", help="YYYY, YYYY-MM, or YYYY-MM-DD")
-    parser.add_argument("--start", help="inclusive date or RFC3339 boundary")
-    parser.add_argument("--end", help="exclusive date or RFC3339 boundary")
-    parser.add_argument("--timezone", help="IANA timezone; defaults to UTC")
+    parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8080", metavar="BASE_URL", help="proxy root URL")
+    parser.add_argument("-g", "--group-by", choices=("model", "user", "model,user"), metavar="GROUP_BY", help="model, user, or model,user")
+    parser.add_argument("-m", "--model")
+    parser.add_argument("-u", "--user")
+    parser.add_argument("-p", "--period", help="YYYY, YYYY-MM, or YYYY-MM-DD")
+    parser.add_argument("-s", "--start", help="inclusive date or RFC3339 boundary")
+    parser.add_argument("-e", "--end", help="exclusive date or RFC3339 boundary")
+    parser.add_argument("-z", "--timezone", help="IANA timezone; defaults to UTC")
     return parser.parse_args()
 
 
