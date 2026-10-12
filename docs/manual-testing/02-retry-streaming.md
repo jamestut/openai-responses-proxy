@@ -62,12 +62,12 @@
 
 ## Case 6: Terminal SSE frame at EOF without the blank-line delimiter
 
-**Setup:** Start a proxy with a short background poll interval and a purpose-built local upstream. Configure the upstream to answer `POST /v1/responses` with `Content-Type: text/event-stream`, a `response.completed` data line ending in one newline but no following blank line, and then close the connection. Give the event a synthetic response ID and usage. Configure `GET /v1/responses/{id}` to return the same terminal Response object as JSON with known usage. Use a fresh accounting database.
+**Setup:** Start a proxy and a purpose-built local upstream. Configure the upstream to answer `POST /v1/responses` with `Content-Type: text/event-stream`, a `response.completed` data line ending in one newline but no following blank line, and then close the connection. Give the event a synthetic response ID and usage. Configure `GET /v1/responses/{id}` to return the same terminal Response object as JSON with known usage. Use a fresh accounting database.
 
-**Actions:** Submit one create request with `stream: true`. Record the client stream, query accounting immediately, then wait for the recovery poll and query accounting again. Inspect the local upstream request counts.
+**Actions:** Submit one create request with `stream: true`. Record the client stream and query accounting immediately. Wait several seconds without making another request and query accounting again. Then retrieve the saved ID with a client `GET /v1/responses/{id}` through the proxy and query accounting again. Inspect the local upstream request counts.
 
-**Expected:** The proxy forwards the received terminal data line, but does not treat an event lacking the SSE blank-line delimiter as dispatched or finalize accounting from that frame. It saves the response ID for recovery. The poller retrieves the terminal JSON Response, completes the original accounting row with its usage, and does not add a second row. If the fixture instead returns 404 for the saved ID, the same row becomes incomplete.
+**Expected:** The proxy forwards the received terminal data line, but does not treat an event lacking the SSE blank-line delimiter as dispatched or finalize accounting from that frame. It saves the response ID for later client retrieval. With no client request, the row stays pending and the upstream receives no GET. The client GET retrieves the terminal JSON Response, completes the original accounting row with its usage, and does not add a second row. If the client GET instead returns 404 for the saved ID, the row stays pending.
 
-**Evidence:** Save the sanitized client stream, pre-recovery and post-recovery aggregate summaries, local POST/GET counts, and final row count. Use only synthetic IDs and input.
+**Evidence:** Save the sanitized client stream, aggregate summaries before and after the client GET, local POST/GET counts, and final row count. Use only synthetic IDs and input.
 
 **Cleanup:** Stop processes and remove local files.

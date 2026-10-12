@@ -30,7 +30,7 @@ curl -sS -X POST http://127.0.0.1:19091/__control/queue \
   -d '{"method":"POST","path":"/v1/responses","responses":[{"status":429,"headers":{"Retry-After":"99"},"body":{"error":{"message":"try later"}}}]}'
 ```
 
-Use `delay_ms` for a delayed response. Use an `events` array for SSE; each event has optional `delay_ms` and a JSON `data` value. The mock flushes every event and terminates the stream with `[DONE]`. The control API also supports `GET /__control/state`, `POST /__control/reset`, and `POST /__control/background` with `{"complete_after_polls":2}`. Default Responses routes return synthetic standard usage, while scripted responses let an agent exercise errors, missing usage, redirects, and alternate terminal events.
+Use `delay_ms` for a delayed response. Use an `events` array for SSE; each event has optional `delay_ms` and a JSON `data` value. The mock flushes every event and terminates the stream with `[DONE]`. The control API also supports `GET /__control/state`, `POST /__control/reset`, and `POST /__control/background` with `{"complete_after_polls":2}`. This threshold counts client GET requests for the background response; the proxy does not retrieve background responses automatically. Default Responses routes return synthetic standard usage, while scripted responses let an agent exercise errors, missing usage, redirects, and alternate terminal events.
 
 Read current mock evidence with:
 
@@ -56,7 +56,7 @@ Send client requests to `http://127.0.0.1:8080/v1` with `Authorization: Bearer t
 
 - [Service, routes, and authentication](01-service-and-auth.md)
 - [429 retries, cancellation, concurrency, and streaming](02-retry-streaming.md)
-- [TLS, background responses, and restart recovery](03-tls-background.md)
+- [TLS, background responses, and client retrieval](03-tls-background.md)
 - [Token accounting and aggregate queries](04-accounting.md)
 - [Logging, reload safety, and storage failures](05-logging-storage.md)
 

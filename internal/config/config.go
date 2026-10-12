@@ -26,7 +26,6 @@ type Config struct {
 	Timeouts            Timeouts
 	Logging             Logging
 	MaxRequestBodyBytes int64
-	Background          Background
 }
 
 type Upstream struct {
@@ -53,21 +52,15 @@ type Logging struct {
 	Destination string
 }
 
-type Background struct {
-	PollInterval  time.Duration
-	MaxConcurrent int
-}
-
 type rawConfig struct {
-	Listen              string        `yaml:"listen"`
-	Upstream            rawUpstream   `yaml:"upstream"`
-	UsersFile           string        `yaml:"users_file"`
-	StateDir            string        `yaml:"state_dir"`
-	Retry               rawRetry      `yaml:"retry"`
-	Timeouts            rawTimeouts   `yaml:"timeouts"`
-	Logging             rawLogging    `yaml:"logging"`
-	MaxRequestBodyBytes int64         `yaml:"max_request_body_bytes"`
-	Background          rawBackground `yaml:"background"`
+	Listen              string      `yaml:"listen"`
+	Upstream            rawUpstream `yaml:"upstream"`
+	UsersFile           string      `yaml:"users_file"`
+	StateDir            string      `yaml:"state_dir"`
+	Retry               rawRetry    `yaml:"retry"`
+	Timeouts            rawTimeouts `yaml:"timeouts"`
+	Logging             rawLogging  `yaml:"logging"`
+	MaxRequestBodyBytes int64       `yaml:"max_request_body_bytes"`
 }
 
 type rawUpstream struct {
@@ -92,11 +85,6 @@ type rawTimeouts struct {
 type rawLogging struct {
 	Level       string `yaml:"level"`
 	Destination string `yaml:"destination"`
-}
-
-type rawBackground struct {
-	PollInterval  string `yaml:"poll_interval"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
 }
 
 type rawUsers struct {
@@ -131,7 +119,6 @@ func Load(path string) (Config, error) {
 		Timeouts:            rawTimeouts{Connect: "10s", TLSHandshake: "10s", ResponseHeader: "0s", TotalRequest: "0s", Shutdown: "30s"},
 		Logging:             rawLogging{Level: "upstream_errors", Destination: "stdout"},
 		MaxRequestBodyBytes: 64 * 1024 * 1024,
-		Background:          rawBackground{PollInterval: "2s", MaxConcurrent: 4},
 	}
 	if err := decodeStrict(data, &raw); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
@@ -153,12 +140,9 @@ func Load(path string) (Config, error) {
 	if raw.Retry.MaxRetries < 0 {
 		return Config{}, errors.New("retry.max_retries must be zero or greater")
 	}
-	// Reject unbounded request sizes and a zero poller pool before any service components start.
+	// Reject unbounded request sizes before any service components start.
 	if raw.MaxRequestBodyBytes <= 0 {
 		return Config{}, errors.New("max_request_body_bytes must be positive")
-	}
-	if raw.Background.MaxConcurrent <= 0 {
-		return Config{}, errors.New("background.max_concurrent must be positive")
 	}
 
 	// All relative paths use the config location, independent of the process working directory.
@@ -206,16 +190,11 @@ func Load(path string) (Config, error) {
 	if err != nil || totalRequest < 0 {
 		return Config{}, errors.New("timeouts.total_request must be a nonnegative Go duration")
 	}
-	// Shutdown and recovery scheduling require positive intervals so draining and polling remain meaningful.
+	// Shutdown draining requires a positive deadline.
 	shutdown, err := parseDuration("timeouts.shutdown", raw.Timeouts.Shutdown)
 	if err != nil || shutdown <= 0 {
 		return Config{}, errors.New("timeouts.shutdown must be a positive Go duration")
 	}
-	pollInterval, err := parseDuration("background.poll_interval", raw.Background.PollInterval)
-	if err != nil || pollInterval <= 0 {
-		return Config{}, errors.New("background.poll_interval must be a positive Go duration")
-	}
-
 	return Config{
 		Path:                absolute,
 		Listen:              raw.Listen,
@@ -226,7 +205,6 @@ func Load(path string) (Config, error) {
 		Timeouts:            Timeouts{Connect: connect, TLSHandshake: tlsHandshake, ResponseHeader: responseHeader, TotalRequest: totalRequest, Shutdown: shutdown},
 		Logging:             Logging{Level: level, Destination: destination},
 		MaxRequestBodyBytes: raw.MaxRequestBodyBytes,
-		Background:          Background{PollInterval: pollInterval, MaxConcurrent: raw.Background.MaxConcurrent},
 	}, nil
 }
 

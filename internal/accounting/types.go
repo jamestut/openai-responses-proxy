@@ -39,11 +39,10 @@ type Usage struct {
 
 // RequestMeta captures attribution before upstream work begins.
 type RequestMeta struct {
-	StartedAt  time.Time
-	User       string
-	Model      string
-	Kind       Kind
-	Background bool
+	StartedAt time.Time
+	User      string
+	Model     string
+	Kind      Kind
 }
 
 // Snapshot records one upstream observation. UsageKnown distinguishes an explicit
@@ -57,17 +56,6 @@ type Snapshot struct {
 	HTTPStatus    int
 	Usage         Usage
 	UsageKnown    bool
-}
-
-// PendingRequest carries the durable identity and attribution needed for recovery.
-type PendingRequest struct {
-	ID         RequestID
-	ResponseID string
-	User       string
-	Model      string
-	StartedAt  time.Time
-	Kind       Kind
-	Background bool
 }
 
 // Dimension selects a public aggregate grouping key.

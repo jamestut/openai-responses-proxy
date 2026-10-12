@@ -2,6 +2,8 @@
 
 Date: 2026-10-08
 
+This report describes behavior observed before background polling was removed. Its background persistence, restart reconciliation, and poller shutdown observations are historical and are not current behavior specifications.
+
 This report records local manual checks performed with synthetic users, requests, responses, and upstream keys, plus one authorized live smoke request. No credential or response text is included. The repository contains manual test specifications rather than a traditional automated unit-test suite.
 
 ## Results

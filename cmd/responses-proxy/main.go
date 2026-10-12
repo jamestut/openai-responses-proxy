@@ -139,29 +139,13 @@ func serve(cfg config.Config) error {
 	}
 	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	ready := proxyServer.StartBackground()
-	// Cancel recovery work on early returns; successful shutdown performs the same cleanup in a controlled order.
+	// Close the upstream transport on early returns; normal shutdown follows the bounded drain path below.
 	defer func() {
 		if !serviceStopped {
-			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
-			defer cancel()
 			cancelService()
-			_ = proxyServer.StopBackground(ctx)
 			proxyServer.Close()
 		}
 	}()
-	// Wait for background recovery startup before exposing the request listener.
-	select {
-	case startupErr := <-ready:
-		if startupErr != nil {
-			if signals.Err() != nil {
-				return nil
-			}
-			return startupErr
-		}
-	case <-signals.Done():
-		return nil
-	}
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.Listen, err)
@@ -190,7 +174,7 @@ func serve(cfg config.Config) error {
 
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
 	defer cancelShutdown()
-	// Stop new work first, then drain handlers and recovery pollers under one shared deadline.
+	// Stop new work first, then drain handlers and accounting writes under one shared deadline.
 	if err := httpServer.Shutdown(shutdownContext); err != nil {
 		_ = httpServer.Close()
 		serveErr = errors.Join(serveErr, fmt.Errorf("shut down HTTP listener: %w", err))
@@ -205,16 +189,12 @@ func serve(cfg config.Config) error {
 	}
 	controlClosed = true
 	cancelService()
-	backgroundWaitErr := proxyServer.StopBackground(shutdownContext)
-	if backgroundWaitErr != nil {
-		serveErr = errors.Join(serveErr, fmt.Errorf("wait for background pollers: %w", backgroundWaitErr))
-	}
 	proxyServer.Close()
 	serviceStopped = true
-	if handlerWaitErr != nil || backgroundWaitErr != nil || shutdownContext.Err() != nil {
-		// Avoid another close wait after the drain budget expires; durable pending rows can resume after restart.
+	if handlerWaitErr != nil || shutdownContext.Err() != nil {
+		// Avoid another close wait after the drain budget expires; pending rows remain durable.
 		storeClosed = true
-		logger.Error("accounting store close skipped after shutdown deadline; durable pending rows will be reconciled on restart, while unflushed updates may be lost")
+		logger.Error("accounting store close skipped after shutdown deadline; pending rows remain durable, while unflushed updates may be lost")
 	} else {
 		if err := store.CloseContext(shutdownContext); err != nil {
 			serveErr = errors.Join(serveErr, fmt.Errorf("accounting store could not be closed cleanly: %w", err))

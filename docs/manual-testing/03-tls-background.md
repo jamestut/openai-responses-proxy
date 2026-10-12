@@ -1,4 +1,4 @@
-# TLS, background responses, and restart recovery
+# TLS, background responses, and client retrieval
 
 ## Case 1: HTTPS trust and hostname verification
 
@@ -19,26 +19,38 @@ Start a proxy pointed at `https://localhost:19090/v1`, first without `upstream.c
 
 **Cleanup:** Stop processes and remove the generated test CA, private keys, configs, and state. Never include the CA private key in evidence.
 
-## Case 2: Background completion and persistence across proxy restart
+## Case 2: Background response stays pending across proxy restart until client retrieval
 
-**Setup:** Start the HTTP mock. Set its completion threshold using `POST /__control/background` with `{"complete_after_polls":4}`. Start a proxy with `background.poll_interval: 2s`, a fresh persistent state directory, and `alice`'s test key.
+**Setup:** Start the HTTP mock. Set its completion threshold using `POST /__control/background` with `{"complete_after_polls":2}`. Start a proxy with a fresh persistent state directory and test keys for `alice` and `bob`. Do not configure a background polling section.
 
-**Actions:** Submit a create request with `background: true` and `model: gpt-6-luna`. Verify its response ID and query accounting immediately. Stop the proxy process abruptly after it has returned the queued response and while accounting still reports pending work. Keep the mock and database directory in place. Restart the proxy with the same config and wait until the accounting result becomes terminal. Retrieve the response as either `alice` or `bob` if both are configured.
+**Actions:** Submit a create request as `alice` with `background: true` and `model: gpt-6-luna`. Verify its response ID and query accounting immediately. Stop the proxy process after it has returned the queued response and while accounting still reports pending work. Keep the mock and database directory in place. Restart the proxy with the same config, wait several seconds without making a request, and query accounting and mock state. Retrieve the response once with a client GET as `alice`, then retrieve it again as `bob`.
 
-**Expected:** The first accepted operation creates one pending accounting row. After restart the poller resumes from the saved response ID, obtains the completed Response, and updates that same row with the original username/model and standard usage. Retrieval by another valid user does not create a second row or change the original attribution. The mock reports poll calls both before/after restart and only one create call.
+**Expected:** The first accepted operation creates one pending accounting row. After restart the row remains pending and the mock has received no GET for its ID. The first client GET is still nonterminal; the second returns a terminal Response because `complete_after_polls` counts client GETs. That GET updates the same row with Alice's original username, model, and standard usage. Retrieval by Bob does not create a second row or change the original attribution. The mock reports one create call and only the two client GETs issued in this case.
 
-**Evidence:** Save pre-restart and post-restart accounting aggregates, the synthetic response ID, mock call counts, and sanitized process restart notes. Do not inspect or capture credentials.
+**Evidence:** Save pre-restart, post-restart-before-GET, and post-terminal-GET accounting aggregates, the synthetic response ID, mock call counts, and sanitized process restart notes. Do not inspect or capture credentials.
 
 **Cleanup:** Stop both processes and remove the test database/configuration.
 
-## Case 3: Unrecoverable background response
+## Case 3: A missing response and a create without a usable ID
 
-**Setup:** Start a fresh mock and proxy with a short poll interval. Prepare a scripted successful background-create response containing a synthetic response ID that the mock has no stored state for.
+**Setup:** Start a fresh mock and proxy. Prepare one scripted successful background-create response with a synthetic response ID that the mock has no stored state for, and another successful create response without a usable Response object or ID.
 
-**Actions:** Queue the create response, submit the background request, and wait through several poll attempts. Query accounting and inspect the mock's retrieval statuses.
+**Actions:** Queue the first create response and submit it with `background: true`. Query accounting, issue a client GET for its saved ID, and query accounting again. Restart the proxy with the same state directory, wait without issuing a request, and query accounting and mock state. Then queue and submit the response without a usable object or ID and query accounting again.
 
-**Expected:** The response starts pending, then becomes incomplete when the final response cannot be recovered. The record retains the original username/model and is not duplicated by polling. An ordinary terminal HTTP error with no usage is a complete zero-usage outcome; a missing final response is the incomplete case.
+**Expected:** The row with a usable saved ID remains pending when its client GET returns 404 and remains pending after restart. The proxy issues no automatic GET, and the row is not marked incomplete by that 404. The create without a usable Response object or ID is incomplete under the existing behavior. An ordinary terminal HTTP error with no usage is a complete zero-usage outcome.
 
-**Evidence:** Save the synthetic ID, poll call count/statuses, and final pending/incomplete accounting counts.
+**Evidence:** Save synthetic IDs where available, client statuses, mock GET counts, and pending/incomplete accounting counts before and after restart.
+
+**Cleanup:** Stop processes and remove local files.
+
+## Case 4: Removed background polling configuration
+
+**Setup:** Start with a config containing the former `background.poll_interval: 2s` setting and a fresh state directory.
+
+**Actions:** Remove the top-level `background` section and start the proxy. Stop it, restore the former section, and try starting the proxy again.
+
+**Expected:** Strict config decoding accepts the file after the old section is removed and rejects the file while the removed section remains. No polling settings are required for background response creation or client retrieval.
+
+**Evidence:** Save sanitized startup status and error category for both config versions. Do not include credentials or private config contents.
 
 **Cleanup:** Stop processes and remove local files.

@@ -55,7 +55,7 @@ Upstream `429` responses are retried using the configured delay with independent
 
 ## Accounting
 
-The SQLite ledger records one row for each admitted response creation or compaction request, including its start time in UTC, username, model, outcome, and standard Responses token usage. It stores input, output, total, cached, cache-write, and reasoning token counts. Missing usage is recorded as zero. Retrieval, cancellation, input-token counting, and background polling do not create additional accounting rows. Background responses stay pending until the final response is observed; work whose final response is lost can be marked incomplete.
+The SQLite ledger records one row for each admitted response creation or compaction request, including its start time in UTC, username, model, outcome, and standard Responses token usage. It stores input, output, total, cached, cache-write, and reasoning token counts. Missing usage is recorded as zero. Retrieval, cancellation, input-token counting, and retries do not create additional accounting rows. A create that returns a queued or running Response, or a stream interrupted after yielding a usable response ID, remains pending until a client retrieves `GET /v1/responses/{id}` and observes a terminal Response. That retrieval updates the original row with its original username and model. There is no automatic retrieval, and pending rows remain pending across restart until a client retrieves them. A plain client GET 404 without a valid Response or usage leaves the row pending. An unterminated SSE event may provide an ID for a later client retrieval, but cannot finalize usage by itself. A nonterminal create that provides no usable response ID can remain incomplete.
 
 Every valid user can query the full ledger through `GET /accounting`:
 
@@ -95,7 +95,7 @@ Malformed filters, invalid time zones, a range missing either boundary, or combi
 
 See the example configuration for all settings. The default `upstream_errors` log level records upstream errors and retry events. It does not log downstream authentication failures. Set a broader level such as `debug` when diagnosing those failures. The default destination is stdout; a file path is resolved relative to the main config file. Credentials are redacted from logs.
 
-The default retry delay is 30 seconds with five retries. Connection and TLS handshake timeouts default to 10 seconds. Response-header and total-request timeouts are disabled by default to allow long streaming responses to finish. A request-body limit defaults to 64 MiB. Background polling defaults to two seconds with four concurrent pollers.
+The default retry delay is 30 seconds with five retries. Connection and TLS handshake timeouts default to 10 seconds. Response-header and total-request timeouts are disabled by default to allow long streaming responses to finish. A request-body limit defaults to 64 MiB.
 
 ## Manual testing
 
@@ -103,4 +103,4 @@ This repository provides AI-agent-readable manual test specifications and a loca
 
 ## Operational notes
 
-SQLite state, including the reload socket, lives under `state_dir`. Keep that directory private and persistent. If the service loses the final upstream response before usage can be recorded, an accounting row can remain incomplete. On shutdown, the service drains handlers, pollers, and queued accounting writes within `timeouts.shutdown`; if that deadline expires, it exits rather than wait indefinitely. Durable pending rows are reconciled after restart, while accounting updates that were not flushed before the deadline may be lost. Retain database backups according to your own operational needs.
+SQLite state, including the reload socket, lives under `state_dir`. Keep that directory private and persistent. If the service loses the final upstream response before usage can be recorded, a row with a saved response ID remains pending for client retrieval; a nonterminal create with no usable ID can remain incomplete. On shutdown, the service drains handlers and queued accounting writes within `timeouts.shutdown`; if that deadline expires, it exits rather than wait indefinitely. Pending rows remain pending after restart until a client GET observes a terminal Response. Accounting updates that were not flushed before the deadline may be lost. No schema migration runs: fresh databases omit the legacy `background` column and polling state index, while existing databases retain their schema. Retain database backups according to your own operational needs.

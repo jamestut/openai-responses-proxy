@@ -29,7 +29,6 @@ type AccountStore interface {
 	ObserveByResponseID(context.Context, string, accounting.Snapshot) (bool, error)
 	Finalize(context.Context, accounting.RequestID, accounting.Snapshot) error
 	MarkIncomplete(context.Context, accounting.RequestID, string, string) error
-	Pending(context.Context) ([]accounting.PendingRequest, error)
 	Query(context.Context, accounting.Filters) (accounting.Report, error)
 }
 
@@ -44,12 +43,6 @@ type Server struct {
 	transport  *http.Transport
 	serviceCtx context.Context
 
-	// Poll state is shared by the scheduler and poll workers under pollMu.
-	pollMu   sync.Mutex
-	polling  map[string]struct{}
-	recover  map[string]struct{}
-	pollWG   sync.WaitGroup
-	pollSem  chan struct{}
 	handlers sync.WaitGroup
 }
 
@@ -90,7 +83,7 @@ func New(cfg config.Config, users *auth.Users, store AccountStore, logger *loggi
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
 		// Preserve the upstream wire body and headers so inspection and forwarding see the same bytes.
-		DisableCompression:    true,
+		DisableCompression: true,
 	}
 	client := &http.Client{
 		Transport: transport,
@@ -102,8 +95,7 @@ func New(cfg config.Config, users *auth.Users, store AccountStore, logger *loggi
 	return &Server{
 		config: cfg, users: users, accounting: store, logger: logger,
 		baseURL: baseURL, client: client, transport: transport,
-		serviceCtx: serviceCtx, polling: make(map[string]struct{}), recover: make(map[string]struct{}),
-		pollSem: make(chan struct{}, cfg.Background.MaxConcurrent),
+		serviceCtx: serviceCtx,
 	}, nil
 }
 

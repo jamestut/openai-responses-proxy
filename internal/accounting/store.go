@@ -118,9 +118,9 @@ func sqliteDSN(path string) string {
 	return parsed.String()
 }
 
-// migrate creates the durable request ledger and the indexes used by recovery and queries.
+// migrate creates the durable request ledger and indexes used by observations and queries.
 func migrate(db *sql.DB) error {
-	// Constraints keep durable row states and token counters valid even after recovery writes.
+	// Constraints keep durable row states and token counters valid after observation updates.
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS accounting_requests (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,7 +128,6 @@ func migrate(db *sql.DB) error {
 	username TEXT NOT NULL,
 	model TEXT NOT NULL DEFAULT '',
 	kind TEXT NOT NULL CHECK (kind IN ('create', 'compact')),
-	background INTEGER NOT NULL DEFAULT 0 CHECK (background IN (0, 1)),
 	response_id TEXT,
 	request_outcome TEXT NOT NULL DEFAULT 'pending',
 	http_status INTEGER NOT NULL DEFAULT 0,
@@ -143,12 +142,11 @@ func migrate(db *sql.DB) error {
 	reasoning_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
 	incomplete_reason TEXT NOT NULL DEFAULT ''
 )`,
-		// A response ID is a unique recovery key, while null IDs remain valid before upstream assigns one.
+		// A response ID identifies the admitted row for later observations; null IDs remain valid before assignment.
 		`CREATE UNIQUE INDEX IF NOT EXISTS accounting_response_id_unique ON accounting_requests(response_id) WHERE response_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS accounting_started_at_idx ON accounting_requests(started_at_us)`,
 		`CREATE INDEX IF NOT EXISTS accounting_model_idx ON accounting_requests(model)`,
 		`CREATE INDEX IF NOT EXISTS accounting_user_idx ON accounting_requests(username)`,
-		`CREATE INDEX IF NOT EXISTS accounting_state_idx ON accounting_requests(usage_state, background)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -224,7 +222,7 @@ func (s *Store) CloseContext(ctx context.Context) error {
 }
 
 // Flush retries retained accounting updates until the queue drains or ctx expires.
-// Call it after request and background workers have stopped accepting new writes.
+// Call it after request handlers and other service work have stopped accepting new writes.
 func (s *Store) Flush(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -367,16 +365,16 @@ func (s *Store) Admit(ctx context.Context, meta RequestMeta) (RequestID, error) 
 		s.writeMu.Unlock()
 		return 0, ErrUnavailable
 	}
-	// Commit this row before sending upstream so retries and polling never admit duplicates.
+	// Commit this row before sending upstream so retries and later observations never admit duplicates.
 	writeCtx, cancel := boundedWriteContext(ctx)
 	tx, err := s.db.BeginTx(writeCtx, nil)
 	if err == nil {
 		var result sql.Result
 		result, err = tx.ExecContext(writeCtx, `
 INSERT INTO accounting_requests
-	(started_at_us, username, model, kind, background, usage_state)
-VALUES (?, ?, ?, ?, ?, 'pending')`,
-			meta.StartedAt.UnixMicro(), meta.User, meta.Model, string(meta.Kind), meta.Background)
+	(started_at_us, username, model, kind, usage_state)
+VALUES (?, ?, ?, ?, 'pending')`,
+			meta.StartedAt.UnixMicro(), meta.User, meta.Model, string(meta.Kind))
 		if err == nil {
 			lastID, idErr := result.LastInsertId()
 			err = idErr
@@ -400,7 +398,7 @@ VALUES (?, ?, ?, ?, ?, 'pending')`,
 	return id, nil
 }
 
-// AttachResponseID binds an admitted row to the upstream ID used for later recovery.
+// AttachResponseID binds an admitted row to the upstream ID used for later observations.
 func (s *Store) AttachResponseID(ctx context.Context, id RequestID, responseID string) error {
 	if responseID == "" {
 		return fmt.Errorf("response ID is required")
@@ -422,7 +420,7 @@ func (s *Store) attachResponseID(ctx context.Context, id RequestID, responseID s
 	if current.Valid && current.String != responseID {
 		return fmt.Errorf("accounting request already has a different response ID")
 	}
-	// One upstream ID can recover at most one admitted row, even across process restarts.
+	// Associate each upstream ID with at most one admitted row, including across restarts.
 	var otherID RequestID
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM accounting_requests WHERE response_id = ? AND id <> ?`, responseID, id).Scan(&otherID)
 	if err == nil {
@@ -438,7 +436,7 @@ func (s *Store) attachResponseID(ctx context.Context, id RequestID, responseID s
 	return err
 }
 
-// ObserveByResponseID applies a response observation to its durable recovery row.
+// ObserveByResponseID applies a response observation to its admitted row.
 // The bool reports whether this store owns the supplied response ID.
 func (s *Store) ObserveByResponseID(ctx context.Context, responseID string, snapshot Snapshot) (bool, error) {
 	if responseID == "" {
@@ -456,7 +454,7 @@ func (s *Store) ObserveByResponseID(ctx context.Context, responseID string, snap
 		return false, s.retryByResponseID(ctx, responseID, snapshot)
 	}
 	if snapshot.HTTPStatus == 404 && snapshot.Status == "not_found" {
-		// A missing background response can no longer produce final usage.
+		// A response no longer retained upstream cannot provide final usage.
 		return true, s.MarkIncomplete(ctx, id, responseID, "upstream response returned 404")
 	}
 	err = s.write(ctx, func(ctx context.Context) error {
@@ -467,7 +465,7 @@ func (s *Store) ObserveByResponseID(ctx context.Context, responseID string, snap
 
 func (s *Store) retryByResponseID(ctx context.Context, responseID string, snapshot Snapshot) error {
 	return s.write(ctx, func(ctx context.Context) error {
-		// A queued ID attachment may become visible while this observation waits for storage recovery.
+		// A queued ID attachment may become visible while this observation waits for a storage retry.
 		var id RequestID
 		err := s.db.QueryRowContext(ctx, `SELECT id FROM accounting_requests WHERE response_id = ?`, responseID).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -600,12 +598,12 @@ WHERE id = ? AND (? = 'final' OR usage_state = 'pending')`,
 	return nil
 }
 
-// MarkIncomplete records that recovery ended without a terminal usage snapshot.
-// A completed row remains complete when a later poll reports an error.
+// MarkIncomplete records an operation that cannot produce a terminal usage snapshot.
+// A completed row remains complete when a later observation fails.
 func (s *Store) MarkIncomplete(ctx context.Context, id RequestID, responseID, reason string) error {
 	return s.write(ctx, func(ctx context.Context) error {
 		if responseID != "" {
-			// Keep the recovery key bound to the row it identified before recording failure.
+			// Keep the response ID bound to the row it identified before recording failure.
 			var current sql.NullString
 			err := s.db.QueryRowContext(ctx, `SELECT response_id FROM accounting_requests WHERE id = ?`, id).Scan(&current)
 			if errors.Is(err, sql.ErrNoRows) {
@@ -626,7 +624,7 @@ func (s *Store) MarkIncomplete(ctx context.Context, id RequestID, responseID, re
 				return err
 			}
 		}
-		// Preserve already finalized usage if a later poll encounters an unrelated failure.
+		// Preserve finalized usage if a later observation encounters an unrelated failure.
 		result, err := s.db.ExecContext(ctx, `
 UPDATE accounting_requests SET
 	response_id = COALESCE(response_id, NULLIF(?, '')),
@@ -759,41 +757,6 @@ func (s *Store) retryWrites() {
 // isTerminalWriteError identifies replay failures that cannot be fixed by retrying.
 func isTerminalWriteError(err error) bool {
 	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrResponseIDConflict) || strings.Contains(err.Error(), "different response ID")
-}
-
-// Pending returns rows that still need upstream recovery, ordered for reproducible startup work.
-func (s *Store) Pending(ctx context.Context) ([]PendingRequest, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, response_id, username, model, started_at_us, kind, background
-FROM accounting_requests WHERE usage_state = 'pending' ORDER BY started_at_us, id`)
-	if err != nil {
-		s.closeAdmissionAfterReadError(err)
-		return nil, err
-	}
-	defer rows.Close()
-	var pending []PendingRequest
-	// Nullable response IDs are retained because a crash can occur before upstream assigns one.
-	for rows.Next() {
-		var item PendingRequest
-		var responseID sql.NullString
-		var startedAt int64
-		var background bool
-		if err := rows.Scan(&item.ID, &responseID, &item.User, &item.Model, &startedAt, &item.Kind, &background); err != nil {
-			s.closeAdmissionAfterReadError(err)
-			return nil, err
-		}
-		if responseID.Valid {
-			item.ResponseID = responseID.String
-		}
-		item.StartedAt = time.UnixMicro(startedAt).UTC()
-		item.Background = background
-		pending = append(pending, item)
-	}
-	if err := rows.Err(); err != nil {
-		s.closeAdmissionAfterReadError(err)
-		return nil, err
-	}
-	return pending, nil
 }
 
 func (s *Store) closeAdmission() {

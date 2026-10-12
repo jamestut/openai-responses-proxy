@@ -11,7 +11,7 @@ import (
 )
 
 // serveSSE forwards complete events promptly while observing Responses usage for accounting.
-func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, response *http.Response, requestID accounting.RequestID, isAccounted, background bool) {
+func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, response *http.Response, requestID accounting.RequestID, isAccounted bool) {
 	copyResponseHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
 	flusher, canFlush := w.(http.Flusher)
@@ -45,7 +45,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, response *http
 				// Hold fields until the blank delimiter; partial frames cannot change accounting.
 				eventLines = append(eventLines, append([]byte(nil), line...))
 				if trimmed == "" {
-					s.observeSSEEvent(eventName, dataLines, &last, &terminal, response.StatusCode, requestID, isAccounted, background)
+					s.observeSSEEvent(eventName, dataLines, &last, &terminal, response.StatusCode, requestID, isAccounted)
 					if _, writeErr := writeEvent(w, eventLines); writeErr != nil {
 						clientWriteFailed = true
 						streamErr = writeErr
@@ -78,14 +78,11 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, response *http
 				break
 			}
 			if len(eventLines) > 0 {
-				// Preserve an unterminated frame for the client, but use it only to save a recovery ID.
+				// Preserve the frame and its ID for a later client retrieval; partial events cannot update usage.
 				if info, ok := parseSSEEvent(eventName, dataLines); ok && info.ID != "" {
 					last.ID = info.ID
 					if isAccounted {
 						s.attachResponseID(requestID, info.ID)
-						if background {
-							s.trackRecovery(info.ID, false)
-						}
 					}
 				}
 				if _, writeErr := writeEvent(w, eventLines); writeErr != nil {
@@ -98,13 +95,11 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, response *http
 	}
 
 	if isAccounted && !terminal {
-		// A nonterminal stream can be completed by polling only when it yielded a response ID.
+		// Keep a row with an ID pending so a later client retrieval can observe its final state.
 		if response.StatusCode >= 400 {
 			last.Status = "failed"
 			s.finalize(requestID, last, response.StatusCode, "failed")
-		} else if last.ID != "" {
-			s.trackRecovery(last.ID, !background)
-		} else {
+		} else if last.ID == "" {
 			reason := "SSE stream ended before a terminal Responses event"
 			if clientWriteFailed {
 				reason = "client disconnected before a terminal Responses event"
@@ -119,7 +114,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, response *http
 	}
 }
 
-func (s *Server) observeSSEEvent(eventName string, dataLines []string, last *responseInfo, terminal *bool, httpStatus int, requestID accounting.RequestID, isAccounted, background bool) {
+func (s *Server) observeSSEEvent(eventName string, dataLines []string, last *responseInfo, terminal *bool, httpStatus int, requestID accounting.RequestID, isAccounted bool) {
 	info, hasResponse := parseSSEEvent(eventName, dataLines)
 	if !hasResponse {
 		return
@@ -131,9 +126,6 @@ func (s *Server) observeSSEEvent(eventName string, dataLines []string, last *res
 	*last = info
 	if isAccounted && info.ID != "" && !*terminal {
 		s.attachResponseID(requestID, info.ID)
-		if background {
-			s.trackRecovery(info.ID, false)
-		}
 	}
 	if isTerminalStatus(info.Status) {
 		// Terminal status closes the accounting lifecycle even if earlier events carried usage.

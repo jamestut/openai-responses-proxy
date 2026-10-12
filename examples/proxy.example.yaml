@@ -19,6 +19,3 @@ logging:
   level: upstream_errors
   destination: stdout
 max_request_body_bytes: 67108864
-background:
-  poll_interval: 2s
-  max_concurrent: 4

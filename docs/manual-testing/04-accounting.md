@@ -30,28 +30,28 @@
 
 ```sql
 INSERT INTO accounting_requests
-  (started_at_us, username, model, kind, background, request_outcome, http_status,
+  (started_at_us, username, model, kind, request_outcome, http_status,
    response_status, usage_state, usage_known, input_tokens, output_tokens, total_tokens,
    cached_tokens, cache_write_tokens, reasoning_tokens)
 VALUES
-  (CAST(strftime('%s', '2026-10-03T13:59:59Z') AS INTEGER) * 1000000, 'alice', 'before', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-10-03T14:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-10-04T12:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-10-04T13:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1);
+  (CAST(strftime('%s', '2026-10-03T13:59:59Z') AS INTEGER) * 1000000, 'alice', 'before', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-10-03T14:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-10-04T12:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-10-04T13:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1);
 ```
 
 Insert the fall-back rows as well, using the same counter values and distinct model labels:
 
 ```sql
 INSERT INTO accounting_requests
-  (started_at_us, username, model, kind, background, request_outcome, http_status,
+  (started_at_us, username, model, kind, request_outcome, http_status,
    response_status, usage_state, usage_known, input_tokens, output_tokens, total_tokens,
    cached_tokens, cache_write_tokens, reasoning_tokens)
 VALUES
-  (CAST(strftime('%s', '2026-04-04T12:59:59Z') AS INTEGER) * 1000000, 'alice', 'before-fall', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-04-04T13:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start-fall', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-04-05T13:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside-fall', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-04-05T14:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end-fall', 'create', 0, 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1);
+  (CAST(strftime('%s', '2026-04-04T12:59:59Z') AS INTEGER) * 1000000, 'alice', 'before-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-04-04T13:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-04-05T13:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-04-05T14:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1);
 ```
 
 Restart the proxy against the same database.
@@ -68,13 +68,13 @@ For the Sydney spring-forward date, use the local day `2026-10-04`: its UTC inte
 
 ## Case 4: Invalid time filters and pending/incomplete counts
 
-**Setup:** Start fresh mock and proxy processes. Create one pending background response. Create a second background response whose synthetic ID cannot be retrieved so reconciliation makes its row incomplete.
+**Setup:** Start fresh mock and proxy processes. Create one background response with a saved synthetic ID that is absent from mock state, leaving it pending. Submit a second create whose successful response has no usable Response object or ID, leaving its row incomplete.
 
-**Actions:** Query ungrouped and grouped totals while the first row is pending, then after it completes. Query with malformed `period`, invalid IANA timezone, only `start`, only `end`, a timestamp without an offset, and `period` combined with a range.
+**Actions:** Query ungrouped and grouped totals. Issue a client GET for the pending response ID and query again. Query with malformed `period`, invalid IANA timezone, only `start`, only `end`, a timestamp without an offset, and `period` combined with a range.
 
-**Expected:** Pending and incomplete counts reflect row states and update when final usage is recovered or unrecoverable. Invalid filters return HTTP 400. A range requires both bounds; timed bounds require RFC3339 offsets. Querying does not create or update ledger rows.
+**Expected:** The first row remains pending after a client GET returns 404; it does not become incomplete, and there is no automatic GET. The second row is incomplete because its create response provided no usable ID. A later client GET that observes a terminal Response can finalize an existing pending row. Invalid filters return HTTP 400. A range requires both bounds; timed bounds require RFC3339 offsets. Accounting queries do not create or update ledger rows.
 
-**Evidence:** Save sanitized query bodies/statuses and mock poll counts.
+**Evidence:** Save sanitized query bodies/statuses, client GET counts, and pending/incomplete totals.
 
 **Cleanup:** Stop processes and remove local state/config.
 
@@ -89,3 +89,15 @@ For the Sydney spring-forward date, use the local day `2026-10-04`: its UTC inte
 **Evidence:** Save sanitized output, statuses, and fixture query strings. Verify the client output contains no key values and that the ledger row count is unchanged by queries.
 
 **Cleanup:** Stop processes, unset the test environment variable, and remove the test database/configuration and temporary HTTP fixture.
+
+## Case 6: Fresh and legacy SQLite schemas without migration
+
+**Setup:** Use one fresh state directory and a separate copy of a synthetic database created by an earlier version, with its legacy `background` column and `accounting_state_idx` index. Do not migrate or alter the legacy database before starting the current proxy.
+
+**Actions:** Start and stop the proxy with the fresh directory. Inspect `PRAGMA table_info(accounting_requests)` and `PRAGMA index_list(accounting_requests)`. Start the proxy directly against the legacy database and inspect those PRAGMAs before and after startup. Admit a new create request and query accounting against each database.
+
+**Expected:** A fresh database has no `background` column or `accounting_state_idx` index. The legacy database remains usable without migration and retains its `background` column and `accounting_state_idx` index; startup does not drop or rebuild either. New admissions omit the legacy column and use its existing `0` default. Both databases accept new rows and return accounting aggregates.
+
+**Evidence:** Save sanitized PRAGMA output, client statuses, and aggregate counts before and after each admission. Do not include raw request rows or credentials.
+
+**Cleanup:** Stop processes and remove both local databases and configs.

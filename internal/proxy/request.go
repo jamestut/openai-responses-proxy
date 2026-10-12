@@ -38,10 +38,10 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, kind acco
 	var requestID accounting.RequestID
 	isAccounted := kind == accounting.KindCreate || kind == accounting.KindCompact
 	if isAccounted {
-		// Admit once before upstream work; retries and later polls update this same row.
+		// Admit once before upstream work; retries and later client retrieval update this same row.
 		meta := accounting.RequestMeta{
 			StartedAt: startedAt, User: userFromContext(r.Context()),
-			Model: model, Kind: kind, Background: background,
+			Model: model, Kind: kind,
 		}
 		requestID, err = s.accounting.Admit(s.persistContext(), meta)
 		if err != nil {
@@ -90,7 +90,7 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, kind acco
 
 	if strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
 		// Streams are forwarded incrementally so clients see events before the upstream finishes.
-		s.serveSSE(w, r, response, requestID, isAccounted, background)
+		s.serveSSE(w, r, response, requestID, isAccounted)
 		return
 	}
 	// Buffer JSON once to inspect accounting fields while still forwarding the original bytes.
@@ -194,7 +194,7 @@ func requestOptions(body []byte) (string, bool) {
 	return request.Model, request.Background
 }
 
-// accountResponse connects the admitted row to response recovery or a final outcome.
+// accountResponse connects the admitted row to its response ID or a final outcome.
 func (s *Server) accountResponse(id accounting.RequestID, status int, info responseInfo, background bool) {
 	if info.ID != "" {
 		if err := s.accounting.AttachResponseID(s.persistContext(), id, info.ID); err != nil {
@@ -204,20 +204,18 @@ func (s *Server) accountResponse(id accounting.RequestID, status int, info respo
 	if info.Valid && isTerminalStatus(info.Status) {
 		// Terminal Responses states can close the admitted row immediately.
 		s.finalize(id, info, status, info.Status)
-		s.untrackRecovery(info.ID)
 		return
 	}
 	if info.Valid && info.ID != "" && (background || isPendingStatus(info.Status)) {
-		// Background and explicitly pending responses can be finished through polling by ID.
-		s.trackRecovery(info.ID, !background)
+		// Keep the row pending so a later client retrieval can observe its final response.
 		return
 	}
 	if info.Valid && info.ID != "" {
-		// A usable ID with an unrecognized or non-pending status has no valid recovery path.
+		// Preserve the existing incomplete classification for unknown foreground states.
 		s.markIncomplete(id, "upstream returned a nonterminal response that cannot be recovered")
 		return
 	}
-	// Without a usable object or an ID for nonterminal state, the row cannot be finished by recovery.
+	// Without a usable object or ID, a later client retrieval cannot update the row.
 	s.markIncomplete(id, "upstream response did not contain a usable Responses object")
 }
 
@@ -233,9 +231,6 @@ func (s *Server) observeResponse(info responseInfo, httpStatus int) {
 	if _, err := s.accounting.ObserveByResponseID(s.persistContext(), info.ID, snapshot); err != nil {
 		s.logger.Error("could not update observed response usage", "error", err.Error())
 	}
-	if phase == accounting.PhaseFinal {
-		s.untrackRecovery(info.ID)
-	}
 }
 
 func (s *Server) finalize(id accounting.RequestID, info responseInfo, httpStatus int, outcome string) {
@@ -245,9 +240,7 @@ func (s *Server) finalize(id accounting.RequestID, info responseInfo, httpStatus
 	}
 	if err := s.accounting.Finalize(s.persistContext(), id, info.snapshot(accounting.PhaseFinal, httpStatus, phaseOutcome)); err != nil {
 		s.logger.Error("could not finalize accounting record", "error", err.Error())
-		return
 	}
-	s.untrackRecovery(info.ID)
 }
 
 func (s *Server) markIncomplete(id accounting.RequestID, reason string) {
@@ -261,7 +254,7 @@ func (s *Server) persistContext() context.Context {
 	return s.serviceCtx
 }
 
-// responseIDFromPath extracts only a single response path segment for recovery fallback.
+// responseIDFromPath extracts only a single response path segment as an ID fallback.
 func responseIDFromPath(path string) string {
 	if !strings.HasPrefix(path, "/v1/responses/") {
 		return ""
@@ -271,18 +264,6 @@ func responseIDFromPath(path string) string {
 		return ""
 	}
 	return parts[0]
-}
-
-func (s *Server) trackRecovery(id string, recovery bool) {
-	if id == "" {
-		return
-	}
-	s.pollMu.Lock()
-	if recovery {
-		// Only interrupted foreground work needs this marker; background rows are polled directly.
-		s.recover[id] = struct{}{}
-	}
-	s.pollMu.Unlock()
 }
 
 func (s *Server) attachResponseID(id accounting.RequestID, responseID string) {
