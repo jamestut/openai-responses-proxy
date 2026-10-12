@@ -2,6 +2,7 @@
 """Print a readable summary from the Responses proxy accounting endpoint."""
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -44,11 +45,16 @@ def parse_args():
     token_format.add_argument("--raw", action="store_true", help="print token counts without separators")
     parser.add_argument("-m", "--model")
     parser.add_argument("-u", "--user")
-    parser.add_argument("-p", "--period", help="YYYY, YYYY-MM, or YYYY-MM-DD")
+    period = parser.add_mutually_exclusive_group()
+    period.add_argument("-p", "--period", help="YYYY, YYYY-MM, or YYYY-MM-DD")
+    period.add_argument("-t", "--today", action="store_true", help="query the current UTC date")
     parser.add_argument("-s", "--start", help="inclusive date or RFC3339 boundary")
     parser.add_argument("-e", "--end", help="exclusive date or RFC3339 boundary")
     parser.add_argument("-z", "--timezone", help="IANA timezone; defaults to UTC")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.today:
+        args.period = datetime.now(timezone.utc).date().isoformat()
+    return args
 
 
 def endpoint_url(base_url, params):

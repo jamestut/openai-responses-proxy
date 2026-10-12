@@ -81,11 +81,12 @@ python3 scripts/query_accounting.py
 python3 scripts/query_accounting.py --group-by user
 python3 scripts/query_accounting.py --group-by model
 python3 scripts/query_accounting.py --group-by model,user --model gpt-6-luna --user alice
+python3 scripts/query_accounting.py --today
 python3 scripts/query_accounting.py --period 2026-10 --timezone Australia/Sydney
 python3 scripts/query_accounting.py --start 2026-10-01 --end 2026-11-01 --timezone Australia/Sydney
 ```
 
-`--base-url` defaults to the proxy root `http://127.0.0.1:8080`; it can point to another proxy root when needed. Use `--model` and `--user` independently or together to apply exact filters. Calendar periods and date-only range bounds use the selected IANA timezone, which defaults to UTC.
+`--base-url` defaults to the proxy root `http://127.0.0.1:8080`; it can point to another proxy root when needed. Use `--model` and `--user` independently or together to apply exact filters. `--today` (or `-t`) queries the current UTC date as a period; it cannot be combined with `--period`. Calendar periods and date-only range bounds use the selected IANA timezone, which defaults to UTC.
 
 An ungrouped empty result prints zero totals. An empty grouped result prints `No matching records.`
 
