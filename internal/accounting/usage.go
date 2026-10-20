@@ -6,28 +6,14 @@ import (
 	"strconv"
 )
 
-// ParseUsage reads only the documented Responses usage object. The bool reports
-// whether usage was present; missing or malformed counter fields are zero.
-func ParseUsage(body []byte) (Usage, bool) {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return Usage{}, false
-	}
-	usageRaw := envelope["usage"]
-	if len(usageRaw) == 0 {
-		// Streaming completion events place the same usage object inside response.
-		var response map[string]json.RawMessage
-		if raw := envelope["response"]; len(raw) != 0 {
-			_ = json.Unmarshal(raw, &response)
-		}
-		usageRaw = response["usage"]
-	}
+// ParseUsageObject reads one Responses usage object without decoding its envelope.
+func ParseUsageObject(usageRaw json.RawMessage) Usage {
 	if len(usageRaw) == 0 || bytes.Equal(bytes.TrimSpace(usageRaw), []byte("null")) {
-		return Usage{}, false
+		return Usage{}
 	}
 	var values map[string]json.RawMessage
 	if err := json.Unmarshal(usageRaw, &values); err != nil || values == nil {
-		return Usage{}, false
+		return Usage{}
 	}
 	usage := Usage{
 		// Detail counters are reported separately and must not be folded into total tokens.
@@ -38,7 +24,7 @@ func ParseUsage(body []byte) (Usage, bool) {
 		CacheWriteTokens: nestedNonnegativeInt(values, "input_tokens_details", "cache_write_tokens"),
 		ReasoningTokens:  nestedNonnegativeInt(values, "output_tokens_details", "reasoning_tokens"),
 	}
-	return usage, true
+	return usage
 }
 
 func nestedNonnegativeInt(values map[string]json.RawMessage, object, field string) int64 {

@@ -7,10 +7,8 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -32,21 +30,17 @@ func (s *Server) targetURL(incoming *url.URL) *url.URL {
 	return &target
 }
 
-// doWithRetries retries only 429s; the bool means a request may have been sent before a transport error.
-func (s *Server) doWithRetries(ctx context.Context, method string, target *url.URL, headers http.Header, body []byte) (*http.Response, error, bool) {
+// doWithRetries retries only 429s.
+func (s *Server) doWithRetries(ctx context.Context, method string, target *url.URL, headers http.Header, body []byte) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
 		if body != nil {
 			// Each attempt gets a fresh reader so retries replay the same body from byte zero.
 			reader = bytes.NewReader(body)
 		}
-		var wroteRequest atomic.Bool
-		trace := &httptrace.ClientTrace{
-			WroteRequest: func(httptrace.WroteRequestInfo) { wroteRequest.Store(true) },
-		}
-		request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), method, target.String(), reader)
+		request, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 		if err != nil {
-			return nil, err, false
+			return nil, err
 		}
 		request.Header = cloneHeaders(headers)
 		// Client credentials must never cross the trust boundary to the upstream.
@@ -58,10 +52,10 @@ func (s *Server) doWithRetries(ctx context.Context, method string, target *url.U
 		}
 		response, err := s.client.Do(request)
 		if err != nil {
-			return response, err, wroteRequest.Load()
+			return response, err
 		}
 		if response.StatusCode != http.StatusTooManyRequests || attempt >= s.config.Retry.MaxRetries {
-			return response, nil, wroteRequest.Load()
+			return response, nil
 		}
 		// Close each retryable response before waiting so its body does not remain held open.
 		_ = response.Body.Close()
@@ -78,7 +72,7 @@ func (s *Server) doWithRetries(ctx context.Context, method string, target *url.U
 				}
 			}
 			// The prior 429 is definitive; cancellation prevented the next attempt from being sent.
-			return response, ctx.Err(), false
+			return response, ctx.Err()
 		case <-timer.C:
 		}
 	}

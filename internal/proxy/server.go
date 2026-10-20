@@ -22,21 +22,11 @@ import (
 	"openai-responses-proxy/internal/logging"
 )
 
-// AccountStore keeps operation admission and later response observations on one durable ledger.
-type AccountStore interface {
-	Admit(context.Context, accounting.RequestMeta) (accounting.RequestID, error)
-	AttachResponseID(context.Context, accounting.RequestID, string) error
-	ObserveByResponseID(context.Context, string, accounting.Snapshot) (bool, error)
-	Finalize(context.Context, accounting.RequestID, accounting.Snapshot) error
-	MarkIncomplete(context.Context, accounting.RequestID, string, string) error
-	Query(context.Context, accounting.Filters) (accounting.Report, error)
-}
-
 // Server routes authenticated Responses requests through one configured upstream.
 type Server struct {
 	config     config.Config
 	users      *auth.Users
-	accounting AccountStore
+	accounting *accounting.Store
 	logger     *logging.Logger
 	baseURL    *url.URL
 	client     *http.Client
@@ -47,7 +37,7 @@ type Server struct {
 }
 
 // New builds the upstream client while retaining the standard TLS trust checks.
-func New(cfg config.Config, users *auth.Users, store AccountStore, logger *logging.Logger, serviceCtx context.Context) (*Server, error) {
+func New(cfg config.Config, users *auth.Users, store *accounting.Store, logger *logging.Logger, serviceCtx context.Context) (*Server, error) {
 	baseURL, err := url.Parse(cfg.Upstream.BaseURL)
 	if err != nil {
 		return nil, err
@@ -111,8 +101,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		// Pin the authenticated identity now so a key reload cannot change in-flight attribution.
-		r = r.WithContext(context.WithValue(r.Context(), userContextKey{}, user))
-		s.serveHTTP(w, r)
+		s.serveHTTP(w, r, user)
 	})
 }
 
@@ -131,14 +120,7 @@ func (s *Server) WaitHandlers(ctx context.Context) error {
 	}
 }
 
-type userContextKey struct{}
-
-func userFromContext(ctx context.Context) string {
-	user, _ := ctx.Value(userContextKey{}).(string)
-	return user
-}
-
-func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request, user string) {
 	if r.URL.Path == "/accounting" {
 		s.serveAccounting(w, r)
 		return
@@ -148,7 +130,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "unsupported route", "invalid_request_error")
 		return
 	}
-	s.serveUpstream(w, r, kind)
+	s.serveUpstream(w, r, user, kind)
 }
 
 func (s *Server) serveAccounting(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +190,14 @@ func classifyRoute(method, path string) (accounting.Kind, bool) {
 
 func (s *Server) Close() {
 	s.transport.CloseIdleConnections()
+}
+
+func (s *Server) record(meta accounting.RequestMeta, result accounting.Result) {
+	ctx, cancel := context.WithTimeout(s.serviceCtx, s.config.Timeouts.Shutdown)
+	defer cancel()
+	if err := s.accounting.Record(ctx, meta, result); err != nil {
+		s.logger.Error("accounting record failed", "error", err.Error())
+	}
 }
 
 func writeAPIError(w http.ResponseWriter, status int, message, kind string) {

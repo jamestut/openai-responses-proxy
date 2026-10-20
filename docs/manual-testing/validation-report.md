@@ -2,7 +2,7 @@
 
 Date: 2026-10-08
 
-This report describes behavior observed before background polling was removed. Its background persistence, restart reconciliation, and poller shutdown observations are historical and are not current behavior specifications.
+This entire report is historical, from before one-shot accounting replaced pending/recovery state and SQLite write retries. It does not validate the simplified implementation. In particular, write recovery, provisional usage retention, retrieval updates, and usage-state observations below are obsolete. Use the current manual specifications for acceptance criteria; no new builds or runtime checks were performed as part of the simplification.
 
 This report records local manual checks performed with synthetic users, requests, responses, and upstream keys, plus one authorized live smoke request. No credential or response text is included. The repository contains manual test specifications rather than a traditional automated unit-test suite.
 
@@ -24,4 +24,4 @@ This report records local manual checks performed with synthetic users, requests
 
 All temporary local configs, databases, generated certificates, response files, mock servers, and proxy processes used for these checks were removed or stopped. The live credential config and response file under `/tmp` were removed.
 
-The manual specifications are not an automated regression suite. If shutdown exceeds its configured deadline, accepted database writes that could not flush may be lost; durable pending rows are reconciled on restart, as described in the user documentation. Cost accounting was excluded from the final implementation scope; accounting records token usage only.
+The manual specifications are not an automated regression suite. Current accounting is best effort and can lose a record on write failure, abrupt exit, or shutdown deadline expiry; there is no restart recovery. Cost accounting remains outside the implementation scope; accounting records token usage only.

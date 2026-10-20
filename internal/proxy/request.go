@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -15,60 +14,59 @@ import (
 )
 
 // serveUpstream handles one accepted route while keeping retries on the same request bytes.
-func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, kind accounting.Kind) {
+func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user string, kind accounting.Kind) {
 	if r.Body != nil {
 		defer r.Body.Close()
 	}
-	// Record arrival time before body reading or accounting admission can add delay.
 	startedAt := time.Now().UTC()
+	isAccounted := kind == accounting.KindCreate || kind == accounting.KindCompact
+	meta := accounting.RequestMeta{StartedAt: startedAt, User: user, Kind: kind}
+	result := accounting.Result{Outcome: "incomplete", IncompleteReason: accounting.ReasonInvalidResponse}
+	if isAccounted {
+		// The result is inserted once on exit, even if the client disconnects.
+		defer func() { s.record(meta, result) }()
+	}
+
 	body, err := readRequestBody(r, s.config.MaxRequestBodyBytes)
 	if err != nil {
+		// These are local rejections: http_status stays zero because no upstream replied.
 		if errors.Is(err, errRequestTooLarge) {
+			result.Outcome = "failed"
+			result.IncompleteReason = accounting.ReasonNone
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "request body is too large", "invalid_request_error")
 		} else if r.Context().Err() == nil {
+			result.Outcome = "failed"
+			result.IncompleteReason = accounting.ReasonNone
 			writeAPIError(w, http.StatusBadRequest, "could not read request body", "invalid_request_error")
+		} else {
+			result.IncompleteReason = accounting.ReasonClientDisconnected
 		}
 		return
 	}
-
-	// The optional operation deadline is layered on the client context so disconnects still cancel work.
-	requestContext, cancel := responseContext(r.Context(), s.config.Timeouts.TotalRequest)
-	defer cancel()
-	model, background := requestOptions(body)
-	var requestID accounting.RequestID
-	isAccounted := kind == accounting.KindCreate || kind == accounting.KindCompact
 	if isAccounted {
-		// Admit once before upstream work; retries and later client retrieval update this same row.
-		meta := accounting.RequestMeta{
-			StartedAt: startedAt, User: userFromContext(r.Context()),
-			Model: model, Kind: kind,
-		}
-		requestID, err = s.accounting.Admit(s.persistContext(), meta)
-		if err != nil {
-			s.logger.Error("accounting admission failed", "error", err.Error())
-			writeAPIError(w, http.StatusServiceUnavailable, "accounting is unavailable", "server_error")
-			return
-		}
+		meta.Model = requestModel(body)
 	}
 
+	requestContext, cancel := responseContext(r.Context(), s.config.Timeouts.TotalRequest)
+	defer cancel()
 	target := s.targetURL(r.URL)
-	response, roundTripErr, wroteRequest := s.doWithRetries(requestContext, r.Method, target, r.Header, body)
+	response, roundTripErr := s.doWithRetries(requestContext, r.Method, target, r.Header, body)
 	if roundTripErr != nil {
-		if isAccounted {
-			// Distinguish a definitive response from a possibly sent request whose result was lost.
-			switch {
-			case response != nil && response.StatusCode == http.StatusTooManyRequests:
-				s.finalize(requestID, responseInfo{Status: "failed", Valid: true}, http.StatusTooManyRequests, "failed")
-			case wroteRequest:
-				s.markIncomplete(requestID, "upstream transport ended after the request may have been sent")
-			default:
-				s.finalize(requestID, responseInfo{Status: "failed", Valid: true}, 0, "failed")
+		result = accounting.Result{Outcome: "incomplete", IncompleteReason: accounting.ReasonTransportError}
+		if response != nil {
+			result.HTTPStatus = response.StatusCode
+			if response.StatusCode == http.StatusTooManyRequests {
+				result.Status = "failed"
+				result.Outcome = "failed"
+				result.IncompleteReason = accounting.ReasonNone
 			}
 		}
 		if isClientGone(r.Context(), requestContext, roundTripErr) {
+			result.IncompleteReason = accounting.ReasonClientDisconnected
 			return
 		}
-		s.logger.UpstreamError("upstream request failed", "error", roundTripErr.Error())
+		// url.Error can include the full target, including query values; keep transport logs fixed.
+		s.logger.UpstreamError("upstream request failed", "error", "transport error")
 		if errors.Is(roundTripErr, context.DeadlineExceeded) || requestContext.Err() == context.DeadlineExceeded {
 			writeAPIError(w, http.StatusGatewayTimeout, "upstream request timed out", "server_error")
 		} else {
@@ -77,10 +75,10 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, kind acco
 		return
 	}
 	defer response.Body.Close()
+	result.HTTPStatus = response.StatusCode
 	if response.StatusCode == http.StatusTooManyRequests {
 		s.logger.UpstreamError("upstream returned 429 after retries", "status", response.StatusCode)
 	} else if response.StatusCode >= 400 {
-		// Log route metadata only; response IDs, query strings, and bodies can be sensitive.
 		s.logger.UpstreamError("upstream returned an HTTP error",
 			"status", response.StatusCode,
 			"method", r.Method,
@@ -89,47 +87,57 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, kind acco
 	}
 
 	if strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		// Streams are forwarded incrementally so clients see events before the upstream finishes.
-		s.serveSSE(w, r, response, requestID, isAccounted)
+		result = s.serveSSE(w, r.Context(), response, isAccounted)
+		result.HTTPStatus = response.StatusCode
 		return
 	}
-	// Buffer JSON once to inspect accounting fields while still forwarding the original bytes.
 	responseBody, readErr := io.ReadAll(response.Body)
-	info := parseResponse(responseBody)
-	if info.ID == "" {
-		info.ID = responseIDFromPath(r.URL.Path)
-	}
-	if response.StatusCode >= 400 && info.ID != "" && info.UsageKnown && !info.Valid {
-		// A retrieve error may omit Response metadata; its path ID and usage still identify failure.
-		info.Valid = true
-		info.Status = "failed"
-	}
 	if isAccounted {
-		if response.StatusCode < 400 {
-			if readErr != nil {
-				s.markIncomplete(requestID, "upstream response body ended before final data")
-			} else {
-				s.accountResponse(requestID, response.StatusCode, info, background)
-			}
-		} else {
-			// Error envelopes can carry standard usage even when they are not Response objects.
-			if !info.UsageKnown {
-				info.Usage, info.UsageKnown = accounting.ParseUsage(responseBody)
-			}
-			s.finalize(requestID, info, response.StatusCode, "failed")
+		info := parseResponse(responseBody)
+		if response.StatusCode >= 400 && info.Status == "" {
+			info.Status = "failed"
 		}
-	} else if info.Valid && info.ID != "" {
-		s.observeResponse(info, response.StatusCode)
+		result = responseResult(info, response.StatusCode)
+		if r.Context().Err() != nil {
+			result.Outcome = "incomplete"
+			result.IncompleteReason = accounting.ReasonClientDisconnected
+		} else if readErr != nil {
+			result.Outcome = "incomplete"
+			result.IncompleteReason = accounting.ReasonResponseReadError
+		}
 	}
-
 	copyResponseHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
 	if len(responseBody) > 0 {
 		_, _ = io.Copy(w, bytes.NewReader(responseBody))
 	}
-	if readErr != nil {
-		s.logger.UpstreamError("upstream response body ended early", "error", readErr.Error())
+	if readErr != nil && r.Context().Err() == nil {
+		s.logger.UpstreamError("upstream response body ended early", "error", "response read error")
 	}
+}
+
+func responseResult(info responseInfo, httpStatus int) accounting.Result {
+	result := accounting.Result{
+		ResponseModel:    info.Model,
+		Status:           info.Status,
+		HTTPStatus:       httpStatus,
+		Usage:            info.Usage,
+		Outcome:          "incomplete",
+		IncompleteReason: accounting.ReasonNonterminalResponse,
+	}
+	if httpStatus >= 400 || info.Status == "failed" {
+		result.Outcome = "failed"
+		result.IncompleteReason = accounting.ReasonNone
+	} else if info.Compact {
+		result.Outcome = "completed"
+		result.IncompleteReason = accounting.ReasonNone
+	} else if isTerminalStatus(info.Status) {
+		result.Outcome = info.Status
+		result.IncompleteReason = accounting.ReasonNone
+	} else if !info.Valid {
+		result.IncompleteReason = accounting.ReasonInvalidResponse
+	}
+	return result
 }
 
 func upstreamHTTPErrorCategory(status int) string {
@@ -171,7 +179,6 @@ func readRequestBody(r *http.Request, limit int64) ([]byte, error) {
 	if r.Body == nil {
 		return nil, nil
 	}
-	// Read one byte beyond the limit to distinguish an exact fit from an oversized body.
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return nil, err
@@ -182,95 +189,12 @@ func readRequestBody(r *http.Request, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-func requestOptions(body []byte) (string, bool) {
-	// Metadata extraction is best-effort; the original JSON remains the forwarded request body.
+func requestModel(body []byte) string {
 	var request struct {
-		Model      string `json:"model"`
-		Background bool   `json:"background"`
+		Model string `json:"model"`
 	}
 	if json.Unmarshal(body, &request) != nil {
-		return "", false
-	}
-	return request.Model, request.Background
-}
-
-// accountResponse connects the admitted row to its response ID or a final outcome.
-func (s *Server) accountResponse(id accounting.RequestID, status int, info responseInfo, background bool) {
-	if info.ID != "" {
-		if err := s.accounting.AttachResponseID(s.persistContext(), id, info.ID); err != nil {
-			s.logger.Error("could not attach upstream response ID", "error", err.Error())
-		}
-	}
-	if info.Valid && isTerminalStatus(info.Status) {
-		// Terminal Responses states can close the admitted row immediately.
-		s.finalize(id, info, status, info.Status)
-		return
-	}
-	if info.Valid && info.ID != "" && (background || isPendingStatus(info.Status)) {
-		// Keep the row pending so a later client retrieval can observe its final response.
-		return
-	}
-	if info.Valid && info.ID != "" {
-		// Preserve the existing incomplete classification for unknown foreground states.
-		s.markIncomplete(id, "upstream returned a nonterminal response that cannot be recovered")
-		return
-	}
-	// Without a usable object or ID, a later client retrieval cannot update the row.
-	s.markIncomplete(id, "upstream response did not contain a usable Responses object")
-}
-
-func (s *Server) observeResponse(info responseInfo, httpStatus int) {
-	// Non-admission routes update an existing row by upstream ID and never add another row.
-	phase := accounting.PhaseProvisional
-	outcome := ""
-	if isTerminalStatus(info.Status) {
-		phase = accounting.PhaseFinal
-		outcome = info.Status
-	}
-	snapshot := info.snapshot(phase, httpStatus, outcome)
-	if _, err := s.accounting.ObserveByResponseID(s.persistContext(), info.ID, snapshot); err != nil {
-		s.logger.Error("could not update observed response usage", "error", err.Error())
-	}
-}
-
-func (s *Server) finalize(id accounting.RequestID, info responseInfo, httpStatus int, outcome string) {
-	phaseOutcome := outcome
-	if phaseOutcome == "" {
-		phaseOutcome = "completed"
-	}
-	if err := s.accounting.Finalize(s.persistContext(), id, info.snapshot(accounting.PhaseFinal, httpStatus, phaseOutcome)); err != nil {
-		s.logger.Error("could not finalize accounting record", "error", err.Error())
-	}
-}
-
-func (s *Server) markIncomplete(id accounting.RequestID, reason string) {
-	if err := s.accounting.MarkIncomplete(s.persistContext(), id, "", reason); err != nil {
-		s.logger.Error("could not mark accounting record incomplete", "error", err.Error())
-	}
-}
-
-func (s *Server) persistContext() context.Context {
-	// Persistence follows service lifetime so a client disconnect cannot cancel durable updates.
-	return s.serviceCtx
-}
-
-// responseIDFromPath extracts only a single response path segment as an ID fallback.
-func responseIDFromPath(path string) string {
-	if !strings.HasPrefix(path, "/v1/responses/") {
 		return ""
 	}
-	parts := strings.Split(strings.TrimPrefix(path, "/v1/responses/"), "/")
-	if len(parts) != 1 {
-		return ""
-	}
-	return parts[0]
-}
-
-func (s *Server) attachResponseID(id accounting.RequestID, responseID string) {
-	if responseID == "" {
-		return
-	}
-	if err := s.accounting.AttachResponseID(s.persistContext(), id, responseID); err != nil {
-		s.logger.Error("could not attach upstream response ID", "error", fmt.Sprint(err))
-	}
+	return request.Model
 }

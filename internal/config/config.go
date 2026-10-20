@@ -17,21 +17,20 @@ import (
 )
 
 type Config struct {
-	Path                string
-	Listen              string
-	Upstream            Upstream
-	UsersFile           string
-	StateDir            string
-	Retry               Retry
-	Timeouts            Timeouts
-	Logging             Logging
-	MaxRequestBodyBytes int64
+	Listen              string      `yaml:"listen"`
+	Upstream            Upstream    `yaml:"upstream"`
+	UsersFile           string      `yaml:"users_file"`
+	StateDir            string      `yaml:"state_dir"`
+	Retry               Retry       `yaml:"retry"`
+	Timeouts            Timeouts    `yaml:"timeouts"`
+	Logging             Logging     `yaml:"logging"`
+	MaxRequestBodyBytes int64       `yaml:"max_request_body_bytes"`
 }
 
 type Upstream struct {
-	BaseURL string
-	APIKey  string
-	CAFile  string
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	CAFile  string `yaml:"ca_file"`
 }
 
 type Retry struct {
@@ -48,25 +47,19 @@ type Timeouts struct {
 }
 
 type Logging struct {
-	Level       string
-	Destination string
+	Level       string `yaml:"level"`
+	Destination string `yaml:"destination"`
 }
 
 type rawConfig struct {
 	Listen              string      `yaml:"listen"`
-	Upstream            rawUpstream `yaml:"upstream"`
+	Upstream            Upstream    `yaml:"upstream"`
 	UsersFile           string      `yaml:"users_file"`
 	StateDir            string      `yaml:"state_dir"`
 	Retry               rawRetry    `yaml:"retry"`
 	Timeouts            rawTimeouts `yaml:"timeouts"`
-	Logging             rawLogging  `yaml:"logging"`
+	Logging             Logging     `yaml:"logging"`
 	MaxRequestBodyBytes int64       `yaml:"max_request_body_bytes"`
-}
-
-type rawUpstream struct {
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	CAFile  string `yaml:"ca_file"`
 }
 
 type rawRetry struct {
@@ -82,23 +75,13 @@ type rawTimeouts struct {
 	Shutdown       string `yaml:"shutdown"`
 }
 
-type rawLogging struct {
-	Level       string `yaml:"level"`
-	Destination string `yaml:"destination"`
-}
-
 type rawUsers struct {
-	Users []rawUser `yaml:"users"`
-}
-
-type rawUser struct {
-	Name    string   `yaml:"name"`
-	APIKeys []string `yaml:"api_keys"`
+	Users []User `yaml:"users"`
 }
 
 type User struct {
-	Name    string
-	APIKeys []string
+	Name    string   `yaml:"name"`
+	APIKeys []string `yaml:"api_keys"`
 }
 
 // Load applies defaults, validates the main YAML file, and resolves its paths from that file's directory.
@@ -117,7 +100,7 @@ func Load(path string) (Config, error) {
 		StateDir:            "./var",
 		Retry:               rawRetry{Delay: "30s", MaxRetries: 5},
 		Timeouts:            rawTimeouts{Connect: "10s", TLSHandshake: "10s", ResponseHeader: "0s", TotalRequest: "0s", Shutdown: "30s"},
-		Logging:             rawLogging{Level: "upstream_errors", Destination: "stdout"},
+		Logging:             Logging{Level: "upstream_errors", Destination: "stdout"},
 		MaxRequestBodyBytes: 64 * 1024 * 1024,
 	}
 	if err := decodeStrict(data, &raw); err != nil {
@@ -170,33 +153,32 @@ func Load(path string) (Config, error) {
 	}
 
 	// Zero retry delay and transport/request timeouts are allowed when callers want no wait or no deadline.
-	delay, err := parseDuration("retry.delay", raw.Retry.Delay)
+	delay, err := time.ParseDuration(raw.Retry.Delay)
 	if err != nil || delay < 0 {
 		return Config{}, fmt.Errorf("retry.delay must be a nonnegative Go duration")
 	}
-	connect, err := parseDuration("timeouts.connect", raw.Timeouts.Connect)
+	connect, err := time.ParseDuration(raw.Timeouts.Connect)
 	if err != nil || connect < 0 {
 		return Config{}, errors.New("timeouts.connect must be a nonnegative Go duration")
 	}
-	tlsHandshake, err := parseDuration("timeouts.tls_handshake", raw.Timeouts.TLSHandshake)
+	tlsHandshake, err := time.ParseDuration(raw.Timeouts.TLSHandshake)
 	if err != nil || tlsHandshake < 0 {
 		return Config{}, errors.New("timeouts.tls_handshake must be a nonnegative Go duration")
 	}
-	responseHeader, err := parseDuration("timeouts.response_header", raw.Timeouts.ResponseHeader)
+	responseHeader, err := time.ParseDuration(raw.Timeouts.ResponseHeader)
 	if err != nil || responseHeader < 0 {
 		return Config{}, errors.New("timeouts.response_header must be a nonnegative Go duration")
 	}
-	totalRequest, err := parseDuration("timeouts.total_request", raw.Timeouts.TotalRequest)
+	totalRequest, err := time.ParseDuration(raw.Timeouts.TotalRequest)
 	if err != nil || totalRequest < 0 {
 		return Config{}, errors.New("timeouts.total_request must be a nonnegative Go duration")
 	}
 	// Shutdown draining requires a positive deadline.
-	shutdown, err := parseDuration("timeouts.shutdown", raw.Timeouts.Shutdown)
+	shutdown, err := time.ParseDuration(raw.Timeouts.Shutdown)
 	if err != nil || shutdown <= 0 {
 		return Config{}, errors.New("timeouts.shutdown must be a positive Go duration")
 	}
 	return Config{
-		Path:                absolute,
 		Listen:              raw.Listen,
 		Upstream:            Upstream{BaseURL: baseURL.String(), APIKey: raw.Upstream.APIKey, CAFile: caFile},
 		UsersFile:           usersFile,
@@ -286,14 +268,6 @@ func validListenAddress(value string) bool {
 	}
 	port, err := strconv.Atoi(portText)
 	return err == nil && port > 0 && port <= 65535
-}
-
-func parseDuration(field, value string) (time.Duration, error) {
-	duration, err := time.ParseDuration(value)
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", field, err)
-	}
-	return duration, nil
 }
 
 func decodeStrict(data []byte, output any) error {

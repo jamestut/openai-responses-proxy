@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -26,7 +27,6 @@ type Server struct {
 	path      string
 	users     *auth.Users
 	usersFile string
-	logger    *logging.Logger
 }
 
 type response struct {
@@ -36,10 +36,6 @@ type response struct {
 
 // Start exposes key reload over a private Unix socket inside stateDir.
 func Start(stateDir, usersFile string, users *auth.Users, logger *logging.Logger) (*Server, error) {
-	// The control endpoint can replace credentials, so its socket lives in the private state directory.
-	if err := EnsureStateDir(stateDir); err != nil {
-		return nil, err
-	}
 	socketPath := filepath.Join(stateDir, socketName)
 	if err := removeStaleSocket(socketPath); err != nil {
 		return nil, err
@@ -53,11 +49,10 @@ func Start(stateDir, usersFile string, users *auth.Users, logger *logging.Logger
 		os.Remove(socketPath)
 		return nil, fmt.Errorf("set reload socket permissions: %w", err)
 	}
-	// Serve only the reload operation; the fallback prevents accidental control routes from being exposed.
-	control := &Server{listener: listener, path: socketPath, users: users, usersFile: usersFile, logger: logger}
+	// Serve only the reload operation on the private socket.
+	control := &Server{listener: listener, path: socketPath, users: users, usersFile: usersFile}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /reload", control.reload)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	control.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := control.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -68,7 +63,8 @@ func Start(stateDir, usersFile string, users *auth.Users, logger *logging.Logger
 }
 
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
-	if r.ContentLength > 0 {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1))
+	if err != nil || len(body) != 0 {
 		writeResponse(w, http.StatusBadRequest, response{Error: "reload request must have an empty body"})
 		return
 	}
@@ -109,9 +105,6 @@ func Reload(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
-	defer cancel()
-	request = request.WithContext(ctx)
 	result, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("contact running proxy: %w", err)

@@ -30,7 +30,7 @@ curl -sS -X POST http://127.0.0.1:19091/__control/queue \
   -d '{"method":"POST","path":"/v1/responses","responses":[{"status":429,"headers":{"Retry-After":"99"},"body":{"error":{"message":"try later"}}}]}'
 ```
 
-Use `delay_ms` for a delayed response. Use an `events` array for SSE; each event has optional `delay_ms` and a JSON `data` value. The mock flushes every event and terminates the stream with `[DONE]`. The control API also supports `GET /__control/state`, `POST /__control/reset`, and `POST /__control/background` with `{"complete_after_polls":2}`. This threshold counts client GET requests for the background response; the proxy does not retrieve background responses automatically. Default Responses routes return synthetic standard usage, while scripted responses let an agent exercise errors, missing usage, redirects, and alternate terminal events.
+Use `delay_ms` for a delayed response. Use an `events` array for SSE; each event has optional `delay_ms` and a JSON `data` value. The mock flushes every event and terminates the stream with `[DONE]`. The control API also supports `GET /__control/state`, `POST /__control/reset`, and `POST /__control/background` with `{"complete_after_polls":2}`. This threshold counts client GET requests for the background response; those GETs only forward and never change accounting. Default Responses routes return synthetic standard usage, while scripted responses let an agent exercise errors, missing usage, redirects, and alternate terminal events.
 
 Read current mock evidence with:
 
@@ -50,7 +50,7 @@ bin/responses-proxy serve manual-test-state/proxy.local.yaml
 
 The sample files under `examples/` provide the current YAML structure. For this fixture, set `upstream.base_url` to `http://127.0.0.1:19090/v1`, set `upstream.api_key: mock-upstream-key`, set `users_file: ./users.yaml` with `alice` / `test-alice-key` and `bob` / `test-bob-key`, and set `state_dir: ./state`. Use `listen: 127.0.0.1:8080`. These relative paths resolve from `manual-test-state/proxy.local.yaml`. Local configuration and database paths are ignored by Git.
 
-Send client requests to `http://127.0.0.1:8080/v1` with `Authorization: Bearer test-alice-key`. Query accounting at `http://127.0.0.1:8080/accounting` with the same user key. Run each scenario with a fresh mock control state and fresh state directory unless that scenario explicitly checks persistence or restart behavior.
+Send client requests to `http://127.0.0.1:8080/v1` with `Authorization: Bearer test-alice-key`. Query accounting at `http://127.0.0.1:8080/accounting` with the same user key. Run each scenario with a fresh mock control state and fresh state directory unless that scenario explicitly checks persistence or restart behavior. Older database schemas are unsupported and must not be reused for ordinary cases. Each create/compact attempts one insert when it ends; wait for the completed handler's insert before comparing totals. There is no pending state, write retry worker, or later accounting update.
 
 ## Specifications
 

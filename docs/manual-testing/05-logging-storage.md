@@ -24,14 +24,26 @@
 
 **Cleanup:** Stop processes and delete local files.
 
-## Case 3: SQLite write lock, admission control, and recovery
+## Case 3: SQLite write failure is logged and discarded
 
-**Setup:** Use a fresh database and start the mock and proxy. The implementation currently uses a five-second SQLite busy timeout; check the configured value before running this case. Queue one successful response delayed by several seconds. An external SQLite CLI/client is needed to hold a lock.
+**Setup:** Use a fresh database and start the mock and proxy with default `upstream_errors` logging captured privately. The implementation uses a five-second SQLite busy timeout. An external SQLite client is needed to hold a lock.
 
-**Actions:** Start the delayed create request. After the mock records it and while the request is accepted, open `manual-test-state/state/accounting.sqlite` (or the equivalent path under the configured state directory) in the external client and run `BEGIN IMMEDIATE;` without committing. Wait for the upstream response and for its final accounting write to exceed the busy timeout. While the external transaction remains open, submit a second create request and inspect mock state. Release the external lock with `ROLLBACK;`. Wait for the service's retained write to retry, query accounting, and submit another create request.
+**Actions:** Acquire an external write lock using `BEGIN IMMEDIATE;`. Submit two create requests whose mock responses finish while the lock is held. Keep the lock held until both accounting attempts have failed; observe sanitized error-log presence without printing keys or bodies. Release the lock with `ROLLBACK;`, wait several seconds, query accounting, and submit a third request. Also run a malformed accounting query while a normal create succeeds.
 
-**Expected:** The already accepted operation is retained for write retry and is not sent upstream again. New billable admissions fail with HTTP 503 while storage cannot write, and the mock receives no request for that rejected admission. After the SQLite lock is released, the accepted row becomes complete with the correct usage, accounting admission reopens, and a new request reaches the mock.
+**Expected:** All creates reach the upstream and return its responses despite accounting failures. No local accounting admission 503 is produced. Each failed insert is logged even at the default level, without credential/body content. The failed rows never reappear after lock release: there is no queue, replay, or background recovery. The third request records normally. Query failures do not gate later creates.
 
-**Evidence:** Save lock acquisition/release times, client status codes, mock counts before/while/after the lock, and final accounting totals. Do not include credentials or request content.
+**Evidence:** Save client statuses, mock call counts, log-presence booleans, and accounting counts before/after releasing the lock. Do not include credentials or bodies.
 
-**Cleanup:** Stop processes, release any open SQLite transaction, confirm no accounting write remains pending, and remove local database/configuration.
+**Cleanup:** Release the external transaction, stop processes, and remove local files.
+
+## Case 4: Bounded shutdown without a write-drain worker
+
+**Setup:** Start fresh mock and proxy processes with a short `timeouts.shutdown` and private state. Prepare one delayed response that finishes within the deadline and another that exceeds it. Use separate runs.
+
+**Actions:** Start a create and signal the proxy while the upstream request is active. Record exit timing, client status, mock cancellation, and the resulting database aggregates after restarting. Repeat while a completed operation's insert is blocked by an external SQLite write lock; release the lock during cleanup.
+
+**Expected:** A handler that finishes within the deadline can record its own usage. At deadline expiry the proxy closes active HTTP work, cancels service persistence, and exits without waiting indefinitely for SQLite close. A record may be absent when its insert cannot finish. Restart never recovers lost operations, updates old rows, or queries the upstream. The reload socket and database remain private.
+
+**Evidence:** Save sanitized exit timing, statuses, counts, and permission modes. Do not claim guaranteed recording after the shutdown deadline.
+
+**Cleanup:** Release locks, stop processes, and remove local files.

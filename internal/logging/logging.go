@@ -13,7 +13,7 @@ type Logger struct {
 	closer io.Closer
 }
 
-// New selects stdout or a private append-only file and keeps the chosen level for helper filtering.
+// New selects stdout or a private append-only file and keeps the level for authentication filtering.
 func New(level, destination string) (*Logger, error) {
 	var output io.Writer = os.Stdout
 	var closer io.Closer
@@ -60,26 +60,6 @@ func (l *Logger) AuthenticationFailure() {
 }
 
 func (l *Logger) Error(message string, attrs ...any) {
-	// General log helpers follow the selected level; upstream event helpers above intentionally bypass this filter.
-	if l.level == "error" || l.level == "warn" || l.level == "info" || l.level == "debug" {
-		l.base.Error(message, attrs...)
-	}
-}
-
-func (l *Logger) Warn(message string, attrs ...any) {
-	if l.level == "warn" || l.level == "info" || l.level == "debug" {
-		l.base.Warn(message, attrs...)
-	}
-}
-
-func (l *Logger) Info(message string, attrs ...any) {
-	if l.level == "info" || l.level == "debug" {
-		l.base.Info(message, attrs...)
-	}
-}
-
-func (l *Logger) Debug(message string, attrs ...any) {
-	if l.level == "debug" {
-		l.base.Debug(message, attrs...)
-	}
+	// Operational failures are always visible; the default still omits authentication failures.
+	l.base.Error(message, attrs...)
 }

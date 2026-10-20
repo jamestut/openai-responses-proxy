@@ -97,55 +97,42 @@ func serve(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	// This guard covers early returns; the normal shutdown path closes the store under its shared deadline.
 	storeClosed := false
 	defer func() {
-		if storeClosed {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
-		defer cancel()
-		if err := store.CloseContext(ctx); err != nil {
-			logger.Error("close accounting store", "error", err.Error())
+		if !storeClosed {
+			_ = store.Close()
 		}
 	}()
 
-	// The reload server and request handlers share this atomic user map.
 	activeUsers := auth.NewUsers(configuredUsers)
 	control, err := admin.Start(cfg.StateDir, cfg.UsersFile, activeUsers, logger)
 	if err != nil {
 		return err
 	}
-	// Retain a bounded fallback for startup failures before the orderly shutdown sequence is reached.
 	controlClosed := false
 	defer func() {
 		if !controlClosed {
-			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = control.Close(ctx)
 		}
 	}()
 
 	serviceContext, cancelService := context.WithCancel(context.Background())
-	serviceStopped := false
-	defer func() {
-		if !serviceStopped {
-			cancelService()
-		}
-	}()
 	proxyServer, err := proxy.New(cfg, activeUsers, store, logger, serviceContext)
 	if err != nil {
+		cancelService()
 		return err
 	}
-	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-	// Close the upstream transport on early returns; normal shutdown follows the bounded drain path below.
+	serviceStopped := false
 	defer func() {
 		if !serviceStopped {
 			cancelService()
 			proxyServer.Close()
 		}
 	}()
+	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.Listen, err)
@@ -162,7 +149,6 @@ func serve(cfg config.Config) error {
 		serveResult <- httpServer.Serve(listener)
 	}()
 
-	// Either a process signal or an unexpected listener exit enters the same bounded drain path.
 	var serveErr error
 	select {
 	case <-signals.Done():
@@ -174,7 +160,6 @@ func serve(cfg config.Config) error {
 
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), cfg.Timeouts.Shutdown)
 	defer cancelShutdown()
-	// Stop new work first, then drain handlers and accounting writes under one shared deadline.
 	if err := httpServer.Shutdown(shutdownContext); err != nil {
 		_ = httpServer.Close()
 		serveErr = errors.Join(serveErr, fmt.Errorf("shut down HTTP listener: %w", err))
@@ -183,23 +168,35 @@ func serve(cfg config.Config) error {
 	if handlerWaitErr != nil {
 		_ = httpServer.Close()
 		serveErr = errors.Join(serveErr, fmt.Errorf("wait for HTTP handlers: %w", handlerWaitErr))
+		cancelService()
+		proxyServer.Close()
+		serviceStopped = true
 	}
 	if err := control.Close(shutdownContext); err != nil {
 		serveErr = errors.Join(serveErr, fmt.Errorf("shut down reload socket: %w", err))
 	}
 	controlClosed = true
-	cancelService()
-	proxyServer.Close()
-	serviceStopped = true
+	if !serviceStopped {
+		cancelService()
+		proxyServer.Close()
+		serviceStopped = true
+	}
 	if handlerWaitErr != nil || shutdownContext.Err() != nil {
-		// Avoid another close wait after the drain budget expires; pending rows remain durable.
 		storeClosed = true
-		logger.Error("accounting store close skipped after shutdown deadline; pending rows remain durable, while unflushed updates may be lost")
+		logger.Error("accounting store close skipped because handlers did not drain before the shutdown deadline; a one-shot accounting record may be missing")
 	} else {
-		if err := store.CloseContext(shutdownContext); err != nil {
-			serveErr = errors.Join(serveErr, fmt.Errorf("accounting store could not be closed cleanly: %w", err))
+		closed := make(chan error, 1)
+		go func() { closed <- store.Close() }()
+		select {
+		case err := <-closed:
+			if err != nil {
+				serveErr = errors.Join(serveErr, fmt.Errorf("accounting store could not be closed cleanly: %w", err))
+			}
+			storeClosed = true
+		case <-shutdownContext.Done():
+			storeClosed = true
+			logger.Error("accounting store close exceeded the shutdown deadline; a one-shot accounting record may be missing")
 		}
-		storeClosed = true
 	}
 	if serveErr != nil {
 		logger.Error("HTTP server stopped unexpectedly", "error", serveErr.Error())

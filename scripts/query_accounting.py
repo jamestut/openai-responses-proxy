@@ -20,8 +20,6 @@ SUMMARY_FIELDS = (
     "cached_tokens",
     "cache_write_tokens",
     "reasoning_tokens",
-    "pending_count",
-    "incomplete_count",
 )
 
 
@@ -156,8 +154,6 @@ def render_summary(summary, indent, token_format):
         f"{indent}  - Output: {format_token_count(values['output_tokens'], token_format)}",
         f"{indent}    - Reasoning: {format_token_count(values['reasoning_tokens'], token_format)}",
         f"{indent}  - Total: {format_token_count(values['total_tokens'], token_format)}",
-        f"{indent}- Pending requests: {values['pending_count']}",
-        f"{indent}- Incomplete requests: {values['incomplete_count']}",
     ]
     return lines
 

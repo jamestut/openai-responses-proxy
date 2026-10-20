@@ -13,33 +13,33 @@ Start a proxy pointed at `https://localhost:19090/v1`, first without `upstream.c
 
 **Actions:** Send a create request without the CA bundle. Stop the proxy, add `upstream.ca_file: ./test-pki/ca.pem` relative to `manual-test-state/proxy.local.yaml`, and restart. Send a create request to the same `localhost` URL. Stop it, configure the upstream URL as `https://127.0.0.1:19090/v1` while retaining the trusted CA, restart, and send a third request.
 
-**Expected:** The default system trust rejects the test certificate chain. Trusting the generated CA allows the `localhost` request. The final request fails because the certificate does not contain an IP SAN for `127.0.0.1`, even though its chain is trusted. No failed handshake reaches the mock HTTP handler. The proxy must not disable certificate verification. The two TLS failures still produce downstream gateway errors and each accounting row is `request_outcome: failed`, `usage_state: complete`, with zero token usage, because no HTTP request was written upstream.
+**Expected:** The default system trust rejects the test certificate chain. Trusting the generated CA allows the `localhost` request. The final request fails because the certificate does not contain an IP SAN for `127.0.0.1`, even though its chain is trusted. No failed handshake reaches the mock HTTP handler. The proxy must not disable certificate verification. The two TLS failures produce downstream gateway errors and zero-token records with `http_status: 0` and `incomplete_reason: transport_error`. No response ID or recovery state is stored.
 
 **Evidence:** Save client status/error category, sanitized mock counts, and proxy logs with credentials redacted. Confirm the successful case reaches the mock once.
 
 **Cleanup:** Stop processes and remove the generated test CA, private keys, configs, and state. Never include the CA private key in evidence.
 
-## Case 2: Background response stays pending across proxy restart until client retrieval
+## Case 2: Background responses forward without accounting recovery
 
-**Setup:** Start the HTTP mock. Set its completion threshold using `POST /__control/background` with `{"complete_after_polls":2}`. Start a proxy with a fresh persistent state directory and test keys for `alice` and `bob`. Do not configure a background polling section.
+**Setup:** Start the HTTP mock. Set its completion threshold using `POST /__control/background` with `{"complete_after_polls":2}`. Start a proxy with a fresh persistent state directory and test keys for `alice` and `bob`.
 
-**Actions:** Submit a create request as `alice` with `background: true` and `model: gpt-6-luna`. Verify its response ID and query accounting immediately. Stop the proxy process after it has returned the queued response and while accounting still reports pending work. Keep the mock and database directory in place. Restart the proxy with the same config, wait several seconds without making a request, and query accounting and mock state. Retrieve the response once with a client GET as `alice`, then retrieve it again as `bob`.
+**Actions:** Submit a create request as `alice` with `background: true` and `model: gpt-6-luna`. Query accounting after the request ends. Restart the proxy with the same database, wait without making requests, and query accounting and mock state. Retrieve the response once as Alice and again as Bob.
 
-**Expected:** The first accepted operation creates one pending accounting row. After restart the row remains pending and the mock has received no GET for its ID. The first client GET is still nonterminal; the second returns a terminal Response because `complete_after_polls` counts client GETs. That GET updates the same row with Alice's original username, model, and standard usage. Retrieval by Bob does not create a second row or change the original attribution. The mock reports one create call and only the two client GETs issued in this case.
+**Expected:** The queued create records one row attributed to Alice with zero tokens, its upstream HTTP/Response statuses, and `incomplete_reason: nonterminal_response`. There is no saved response ID or pending state. The mock receives no automatic GET before or after restart. The two client GETs forward normally; the second returns terminal usage, but neither changes accounting. Attribution and the original zero-token totals remain unchanged.
 
-**Evidence:** Save pre-restart, post-restart-before-GET, and post-terminal-GET accounting aggregates, the synthetic response ID, mock call counts, and sanitized process restart notes. Do not inspect or capture credentials.
+**Evidence:** Save aggregate snapshots before/after restart and both GETs, sanitized mock counts, and synthetic status/reason fields from SQLite. Do not capture credentials.
 
-**Cleanup:** Stop both processes and remove the test database/configuration.
+**Cleanup:** Stop processes and remove local files.
 
-## Case 3: A missing response and a create without a usable ID
+## Case 3: Missing and malformed responses
 
-**Setup:** Start a fresh mock and proxy. Prepare one scripted successful background-create response with a synthetic response ID that the mock has no stored state for, and another successful create response without a usable Response object or ID.
+**Setup:** Start a fresh mock and proxy. Prepare a successful queued create with a synthetic ID absent from mock state, plus a successful create returning an unrelated JSON object without usage.
 
-**Actions:** Queue the first create response and submit it with `background: true`. Query accounting, issue a client GET for its saved ID, and query accounting again. Restart the proxy with the same state directory, wait without issuing a request, and query accounting and mock state. Then queue and submit the response without a usable object or ID and query accounting again.
+**Actions:** Submit both creates. Retrieve the first ID, which returns 404. Query accounting before and after the GET, and again after restarting the proxy.
 
-**Expected:** The row with a usable saved ID remains pending when its client GET returns 404 and remains pending after restart. The proxy issues no automatic GET, and the row is not marked incomplete by that 404. The create without a usable Response object or ID is incomplete under the existing behavior. An ordinary terminal HTTP error with no usage is a complete zero-usage outcome.
+**Expected:** Both creates record zero tokens exactly once. The queued create has reason `nonterminal_response`; the unrelated JSON has reason `invalid_response`. The GET and restart do not update records or trigger follow-up requests. Ordinary HTTP errors without usage also record zero tokens and a failed outcome; no recovery state is created.
 
-**Evidence:** Save synthetic IDs where available, client statuses, mock GET counts, and pending/incomplete accounting counts before and after restart.
+**Evidence:** Save client statuses, mock counts, aggregates, and the synthetic enum values. Do not save request text or credentials.
 
 **Cleanup:** Stop processes and remove local files.
 
@@ -49,8 +49,8 @@ Start a proxy pointed at `https://localhost:19090/v1`, first without `upstream.c
 
 **Actions:** Remove the top-level `background` section and start the proxy. Stop it, restore the former section, and try starting the proxy again.
 
-**Expected:** Strict config decoding accepts the file after the old section is removed and rejects the file while the removed section remains. No polling settings are required for background response creation or client retrieval.
+**Expected:** Strict decoding accepts the current file and rejects the removed configuration section. Background JSON fields continue to forward without any proxy polling or recovery settings.
 
-**Evidence:** Save sanitized startup status and error category for both config versions. Do not include credentials or private config contents.
+**Evidence:** Save sanitized startup status and error category. Do not include private config contents.
 
 **Cleanup:** Stop processes and remove local files.

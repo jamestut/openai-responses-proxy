@@ -55,16 +55,34 @@ Upstream `429` responses are retried using the configured delay with independent
 
 ## Accounting
 
-The SQLite ledger records one row for each admitted response creation or compaction request, including its start time in UTC, username, model, outcome, and standard Responses token usage. It stores input, output, total, cached, cache-write, and reasoning token counts. Missing usage is recorded as zero. Retrieval, cancellation, input-token counting, and retries do not create additional accounting rows. A create that returns a queued or running Response, or a stream interrupted after yielding a usable response ID, remains pending until a client retrieves `GET /v1/responses/{id}` and observes a terminal Response. That retrieval updates the original row with its original username and model. There is no automatic retrieval, and pending rows remain pending across restart until a client retrieves them. A plain client GET 404 without a valid Response or usage leaves the row pending. An unterminated SSE event may provide an ID for a later client retrieval, but cannot finalize usage by itself. A nonterminal create that provides no usable response ID can remain incomplete.
+The proxy attempts one SQLite accounting insert when each response creation or compaction operation ends. It records the request start time in UTC, original username, model, operation kind, outcome, HTTP status, Response status, and standard token counts: input, output, total, cached, cache-write, and reasoning tokens. Detail counters are not added again to total tokens.
 
-Every valid user can query the full ledger through `GET /accounting`:
+`kind` is `create` or `compact`. `http_status` is the upstream HTTP status, or `0` when no upstream HTTP response was received, including local request-body rejection. `response_status` is the lowercased Response lifecycle status, an SSE-inferred status, or `failed` inferred for an HTTP error; it stays empty when unavailable. `outcome` describes the operation's result, such as `completed`, `failed`, or `incomplete`.
+
+Missing usage is zero. Nonterminal events and unterminated EOF frames do not contribute usage. Retrieval, deletion, cancellation, input-item listing, and input-token counting never create or update accounting rows. HTTP 429 retries produce only one accounting attempt for the overall operation.
+
+There are no saved response IDs, pending accounting rows, provisional usage writes, or later-retrieval updates. Background responses still forward normally, but a queued response without usage records zero tokens; fetching it later does not change that record. Accounting inserts are best effort: a failed insert is logged and discarded, without write retries, recovery queues, or blocking future requests on storage availability. An operation still in flight has no row yet.
+
+The `incomplete_reason` column uses a SQLite-enforced enum:
+
+| Value | Meaning |
+| --- | --- |
+| `""` | No proxy-detected incomplete condition. Missing usage alone is allowed. |
+| `transport_error` | The upstream request failed at the transport layer. |
+| `response_read_error` | Reading a JSON body or unfinished SSE stream failed. |
+| `client_disconnected` | The client disconnected before the operation finished. |
+| `stream_ended` | The stream ended before a complete terminal Response event. |
+| `nonterminal_response` | The JSON Response remained queued, running, or otherwise nonterminal. |
+| `invalid_response` | A successful JSON response was not a usable Responses object. |
+
+Every valid user can query global accounting aggregates through `GET /accounting`:
 
 ```sh
 curl 'http://127.0.0.1:8080/accounting?group_by=model,user&timezone=UTC' \
   -H 'Authorization: Bearer sk-user-example-alice'
 ```
 
-Without `group_by`, the response contains one summary under `totals`; with grouping, it contains a `groups` array. Each summary includes request count, input/output/total tokens, cached/cache-write/reasoning tokens, and pending/incomplete counts. `group_by` accepts `model`, `user`, or `model,user`. Add exact `model` and `user` filters as needed. `period` accepts a year (`2026`), month (`2026-10`), or date (`2026-10-08`). Alternatively, provide both `start` and `end`; the range includes the start and excludes the end. Date-only boundaries are interpreted at local midnight in `timezone`; RFC3339 date-time boundaries must include an offset. The timezone is an IANA name and defaults to UTC.
+Without `group_by`, the response contains one summary under `totals`; with grouping, it contains a `groups` array. Each summary includes request count and input/output/total/cached/cache-write/reasoning token counts. Pending/incomplete aggregate counters have been removed. `group_by` accepts `model`, `user`, or `model,user`. Add exact `model` and `user` filters as needed. `period` accepts a year (`2026`), month (`2026-10`), or date (`2026-10-08`). Alternatively, provide both `start` and `end`; the range includes the start and excludes the end. Date-only boundaries are interpreted at local midnight in `timezone`; RFC3339 date-time boundaries must include an offset. The timezone is an IANA name and defaults to UTC.
 
 For example, this query selects all records from October 2026 in Sydney local time and groups them by model:
 
@@ -73,28 +91,22 @@ curl 'http://127.0.0.1:8080/accounting?period=2026-10&timezone=Australia%2FSydne
   -H 'Authorization: Bearer sk-user-example-alice'
 ```
 
-The [Python accounting query client](scripts/query_accounting.py) prints the same aggregate as nested bullet lists and needs only Python 3. Set a proxy user key in `RESPONSES_PROXY_API_KEY`; the key is read from the environment and is not accepted as a command-line argument:
+Malformed filters, invalid time zones, a range missing either boundary, or combining `period` with `start`/`end` returns HTTP 400. An ungrouped empty result contains zero totals; grouped empty results contain no groups. Totals remain exact even beyond the signed 64-bit aggregate range.
+
+The [Python accounting query client](scripts/query_accounting.py) prints request and token counts from ungrouped or grouped summaries. Set `RESPONSES_PROXY_API_KEY` to a valid user key, then run:
 
 ```sh
-export RESPONSES_PROXY_API_KEY='your-proxy-user-key'
+export RESPONSES_PROXY_API_KEY='your-user-key'
 python3 scripts/query_accounting.py
-python3 scripts/query_accounting.py --group-by user
-python3 scripts/query_accounting.py --group-by model
-python3 scripts/query_accounting.py --group-by model,user --model gpt-6-luna --user alice
-python3 scripts/query_accounting.py --today
-python3 scripts/query_accounting.py --period 2026-10 --timezone Australia/Sydney
-python3 scripts/query_accounting.py --start 2026-10-01 --end 2026-11-01 --timezone Australia/Sydney
+python3 scripts/query_accounting.py --group-by model,user --period 2026-10 --timezone UTC --human
+python3 scripts/query_accounting.py --user alice --today
 ```
 
-`--base-url` defaults to the proxy root `http://127.0.0.1:8080`; it can point to another proxy root when needed. Use `--model` and `--user` independently or together to apply exact filters. `--today` (or `-t`) queries the current UTC date as a period; it cannot be combined with `--period`. Calendar periods and date-only range bounds use the selected IANA timezone, which defaults to UTC.
-
-An ungrouped empty result prints zero totals. An empty grouped result prints `No matching records.`
-
-Malformed filters, invalid time zones, a range missing either boundary, or combining `period` with `start`/`end` returns HTTP 400. An ungrouped empty result contains zero totals; grouped empty results contain no groups. Results include pending and incomplete counts.
+Use `--start` and `--end` instead of `--period` for a half-open time range. Empty grouped results print `No matching records.`; empty ungrouped results print zero totals.
 
 ## Retry, timeout, and logging settings
 
-See the example configuration for all settings. The default `upstream_errors` log level records upstream errors and retry events. It does not log downstream authentication failures. Set a broader level such as `debug` when diagnosing those failures. The default destination is stdout; a file path is resolved relative to the main config file. Credentials are redacted from logs.
+See the example configuration for all settings. The default `upstream_errors` log level records upstream errors, retry events, and service/accounting errors. It does not log downstream authentication failures. Set a broader level such as `debug` when diagnosing those failures. The default destination is stdout; a file path is resolved relative to the main config file. Credentials are excluded from logs.
 
 The default retry delay is 30 seconds with five retries. Connection and TLS handshake timeouts default to 10 seconds. Response-header and total-request timeouts are disabled by default to allow long streaming responses to finish. A request-body limit defaults to 64 MiB.
 
@@ -104,4 +116,6 @@ This repository provides AI-agent-readable manual test specifications and a loca
 
 ## Operational notes
 
-SQLite state, including the reload socket, lives under `state_dir`. Keep that directory private and persistent. If the service loses the final upstream response before usage can be recorded, a row with a saved response ID remains pending for client retrieval; a nonterminal create with no usable ID can remain incomplete. On shutdown, the service drains handlers and queued accounting writes within `timeouts.shutdown`; if that deadline expires, it exits rather than wait indefinitely. Pending rows remain pending after restart until a client GET observes a terminal Response. Accounting updates that were not flushed before the deadline may be lost. No schema migration runs: fresh databases omit the legacy `background` column and polling state index, while existing databases retain their schema. Retain database backups according to your own operational needs.
+SQLite state, including the reload socket, lives under `state_dir`. Keep that directory private and persistent. On shutdown, the service drains handlers within `timeouts.shutdown`; if that deadline expires, it stops active work and exits rather than wait indefinitely. A failed insert, abrupt exit, or expired shutdown deadline can lose an accounting record. There is no write replay or recovery after restart.
+
+Use a fresh database for this version. Older schemas are unsupported; there is no migration, schema rebuild, or compatibility layer. Existing database files are not deleted automatically. Retain backups according to your own operational needs.

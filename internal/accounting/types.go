@@ -2,28 +2,16 @@ package accounting
 
 import (
 	"encoding/json"
-	"errors"
 	"net/url"
 	"time"
 )
 
-// RequestID identifies the single durable ledger row admitted for an operation.
-type RequestID int64
-
-// Kind identifies the create or compact operation admitted to the ledger.
+// Kind identifies a create or compact operation.
 type Kind string
 
 const (
 	KindCreate  Kind = "create"
 	KindCompact Kind = "compact"
-)
-
-// Phase distinguishes observations that may still be refined from terminal results.
-type Phase string
-
-const (
-	PhaseProvisional Phase = "provisional"
-	PhaseFinal       Phase = "final"
 )
 
 // Usage contains only standard Responses token counters; detail counters are not
@@ -37,7 +25,7 @@ type Usage struct {
 	ReasoningTokens  int64
 }
 
-// RequestMeta captures attribution before upstream work begins.
+// RequestMeta carries attribution for one completed operation.
 type RequestMeta struct {
 	StartedAt time.Time
 	User      string
@@ -45,17 +33,27 @@ type RequestMeta struct {
 	Kind      Kind
 }
 
-// Snapshot records one upstream observation. UsageKnown distinguishes an explicit
-// zero-usage response from an observation that did not include usage.
-type Snapshot struct {
-	Phase         Phase
-	ResponseID    string
-	ResponseModel string
-	Status        string
-	Outcome       string
-	HTTPStatus    int
-	Usage         Usage
-	UsageKnown    bool
+// IncompleteReason values are constrained to the same enum in the SQLite schema.
+type IncompleteReason string
+
+const (
+	ReasonNone                IncompleteReason = ""
+	ReasonTransportError      IncompleteReason = "transport_error"
+	ReasonResponseReadError   IncompleteReason = "response_read_error"
+	ReasonClientDisconnected  IncompleteReason = "client_disconnected"
+	ReasonStreamEnded         IncompleteReason = "stream_ended"
+	ReasonNonterminalResponse IncompleteReason = "nonterminal_response"
+	ReasonInvalidResponse     IncompleteReason = "invalid_response"
+)
+
+// Result is the single accounting observation made when an operation ends.
+type Result struct {
+	ResponseModel    string
+	Status           string
+	Outcome          string
+	HTTPStatus       int
+	Usage            Usage
+	IncompleteReason IncompleteReason
 }
 
 // Dimension selects a public aggregate grouping key.
@@ -84,8 +82,6 @@ type Summary struct {
 	CachedTokens     json.Number `json:"cached_tokens"`
 	CacheWriteTokens json.Number `json:"cache_write_tokens"`
 	ReasoningTokens  json.Number `json:"reasoning_tokens"`
-	PendingCount     json.Number `json:"pending_count"`
-	IncompleteCount  json.Number `json:"incomplete_count"`
 }
 
 // Group omits dimensions that were not requested by the caller.
@@ -100,12 +96,6 @@ type Report struct {
 	Totals *Summary `json:"totals,omitempty"`
 	Groups []Group  `json:"groups,omitempty"`
 }
-
-var (
-	ErrUnavailable        = errors.New("accounting storage unavailable")
-	ErrNotFound           = errors.New("accounting request not found")
-	ErrResponseIDConflict = errors.New("response ID is already associated with another accounting request")
-)
 
 // ParseFilters strictly validates the query contract and converts calendar bounds
 // in the requested IANA zone into a half-open UTC range.

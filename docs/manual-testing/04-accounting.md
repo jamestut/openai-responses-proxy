@@ -4,9 +4,9 @@
 
 **Setup:** Start fresh mock and proxy processes, reset the mock, and use a new state directory. Configure `max_retries: 5` and a short delay. Use `alice`'s test key.
 
-**Actions:** Create a normal JSON response using the mock's default standard usage. Submit a compact request. Queue and submit a terminal JSON response without a `usage` member. Queue a definitive HTTP 500 response without usage. Queue six 429 responses to exhaust retries. Retrieve and cancel one successful response, list its input items, and call the input-token endpoint. Query accounting grouped by model and user.
+**Actions:** Create a normal JSON response using the mock's default standard usage. Submit a compact request. Queue and submit a terminal JSON response without a `usage` member and a nonterminal JSON Response with standard usage. Queue a definitive HTTP 500 response without usage and another error response containing standard usage. Queue six 429 responses to exhaust retries. Retrieve and cancel one successful response, list its input items, and call the input-token endpoint. Query accounting grouped by model and user.
 
-**Expected:** The JSON create and compact operations each have one row with the standard token totals and details. Cached, cache-write, and reasoning details are recorded in their own counters, not added a second time to total tokens. A well-formed terminal Response with no `usage` is complete with zero token counts. Definitive HTTP failures, including exhausted 429, are complete failed rows with zero usage unless the error response contains standard usage. Retrieval, cancellation, input-item listing, input-token counting, and retry attempts create no extra rows. The aggregate request count equals admitted create/compact operations, not network attempts.
+**Expected:** The JSON create and compact operations each have one row with the standard token totals and details. Cached, cache-write, and reasoning details are recorded in their own counters, not added a second time to total tokens. A terminal Response without `usage` records zero token counts. Nonterminal JSON usage is counted from that single response with reason `nonterminal_response`; it is never followed up. Definitive HTTP failures, including exhausted 429, record failed outcomes with zero usage unless their own response contains standard usage. A successful compaction object can omit lifecycle status and still contribute its own usage. Retrieval, cancellation, input-item listing, input-token counting, and retry attempts create no extra rows. The aggregate request count equals finished create/compact operations whose insert succeeded, not network attempts. There are no rows while those operations are still in flight.
 
 **Evidence:** Save sanitized query JSON, client statuses, mock counts, and the synthetic row identities/user/model if available. Keep the request input synthetic.
 
@@ -30,28 +30,28 @@
 
 ```sql
 INSERT INTO accounting_requests
-  (started_at_us, username, model, kind, request_outcome, http_status,
-   response_status, usage_state, usage_known, input_tokens, output_tokens, total_tokens,
+  (started_at_us, username, model, kind, outcome, http_status,
+   response_status, incomplete_reason, input_tokens, output_tokens, total_tokens,
    cached_tokens, cache_write_tokens, reasoning_tokens)
 VALUES
-  (CAST(strftime('%s', '2026-10-03T13:59:59Z') AS INTEGER) * 1000000, 'alice', 'before', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-10-03T14:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-10-04T12:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-10-04T13:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1);
+  (CAST(strftime('%s', '2026-10-03T13:59:59Z') AS INTEGER) * 1000000, 'alice', 'before', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-10-03T14:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-10-04T12:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-10-04T13:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1);
 ```
 
 Insert the fall-back rows as well, using the same counter values and distinct model labels:
 
 ```sql
 INSERT INTO accounting_requests
-  (started_at_us, username, model, kind, request_outcome, http_status,
-   response_status, usage_state, usage_known, input_tokens, output_tokens, total_tokens,
+  (started_at_us, username, model, kind, outcome, http_status,
+   response_status, incomplete_reason, input_tokens, output_tokens, total_tokens,
    cached_tokens, cache_write_tokens, reasoning_tokens)
 VALUES
-  (CAST(strftime('%s', '2026-04-04T12:59:59Z') AS INTEGER) * 1000000, 'alice', 'before-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-04-04T13:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-04-05T13:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1),
-  (CAST(strftime('%s', '2026-04-05T14:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end-fall', 'create', 'complete', 200, 'completed', 'complete', 1, 4, 6, 10, 1, 2, 1);
+  (CAST(strftime('%s', '2026-04-04T12:59:59Z') AS INTEGER) * 1000000, 'alice', 'before-fall', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-04-04T13:00:00Z') AS INTEGER) * 1000000, 'alice', 'at-start-fall', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-04-05T13:59:59Z') AS INTEGER) * 1000000, 'bob', 'inside-fall', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1),
+  (CAST(strftime('%s', '2026-04-05T14:00:00Z') AS INTEGER) * 1000000, 'bob', 'at-end-fall', 'create', 'completed', 200, 'completed', '', 4, 6, 10, 1, 2, 1);
 ```
 
 Restart the proxy against the same database.
@@ -66,38 +66,38 @@ For the Sydney spring-forward date, use the local day `2026-10-04`: its UTC inte
 
 **Cleanup:** Stop the proxy and remove the fixture database and configs.
 
-## Case 4: Invalid time filters and pending/incomplete counts
+## Case 4: Strict accounting filters
 
-**Setup:** Start fresh mock and proxy processes. Create one background response with a saved synthetic ID that is absent from mock state, leaving it pending. Submit a second create whose successful response has no usable Response object or ID, leaving its row incomplete.
+**Setup:** Start fresh mock and proxy processes and create two synthetic completed operations.
 
-**Actions:** Query ungrouped and grouped totals. Issue a client GET for the pending response ID and query again. Query with malformed `period`, invalid IANA timezone, only `start`, only `end`, a timestamp without an offset, and `period` combined with a range.
+**Actions:** Query with malformed `period`, invalid IANA timezone, only `start`, only `end`, a timestamp without an offset, `period` combined with a range, unknown parameter names, repeated parameters, and invalid groupings. Query a nonexistent exact model/user filter with and without grouping.
 
-**Expected:** The first row remains pending after a client GET returns 404; it does not become incomplete, and there is no automatic GET. The second row is incomplete because its create response provided no usable ID. A later client GET that observes a terminal Response can finalize an existing pending row. Invalid filters return HTTP 400. A range requires both bounds; timed bounds require RFC3339 offsets. Accounting queries do not create or update ledger rows.
+**Expected:** Invalid filters return HTTP 400. A range requires both bounds; timed bounds require RFC3339 offsets. Exact filters match no additional rows. Empty ungrouped results contain zero totals; grouped results contain no groups. Querying accounting never changes stored records. Summaries contain only request and token counts, without `pending_count` or `incomplete_count`.
 
-**Evidence:** Save sanitized query bodies/statuses, client GET counts, and pending/incomplete totals.
+**Evidence:** Save sanitized query/status pairs and aggregate results.
 
-**Cleanup:** Stop processes and remove local state/config.
+**Cleanup:** Stop processes and remove local files.
 
-## Case 5: Python accounting query client
+## Case 5: Python client accepts simplified summaries
 
-**Setup:** Use a fresh local mock and proxy as in Case 2, create synthetic rows for Alice and Bob with at least two model names, and set `RESPONSES_PROXY_API_KEY` to one local user key. Do not use a live API key.
+**Setup:** Start a fresh mock and proxy with a valid test user key. Create two synthetic Responses operations so both ungrouped and grouped queries have results.
 
-**Actions:** Run `python3 scripts/query_accounting.py` with no grouping, then with `--group-by user`, `--group-by model`, and `--group-by model,user`. Run with `--human` and `--raw`, then together to check that the format options are mutually exclusive. Try exact `--model` and `--user` filters separately and together, including an unknown value. Query the current UTC date with both `--today` and `-t`, and verify that combining either with `--period` is rejected. Query a calendar period and an equivalent date-only range with `--timezone Australia/Sydney`; include a trailing slash on `--base-url` once. Unset `RESPONSES_PROXY_API_KEY` and run once to check missing-key handling, then try an invalid grouping, an incomplete range, an unauthorized local key, a stopped proxy, and a local HTTP fixture that returns malformed JSON, a non-success status, and a redirect. Capture exit status and sanitized stderr for each failure.
+**Actions:** Set `RESPONSES_PROXY_API_KEY` to the test key and run `scripts/query_accounting.py` without grouping, then with `--group-by model,user`. Query an exact model/user combination with no matches, both grouped and ungrouped. Inspect the corresponding HTTP JSON summaries.
 
-**Expected:** The client prints readable nested bullet summaries with all returned aggregate fields, including zero-valued token details and pending/incomplete counts. Token counts use thousand separators by default, no separators with `--raw`, and spaced `k`/`M`/`B`/`T` suffixes with at most one decimal using `--human`; values at or above 1,000 T use full integers with thousand separators. Combining the format options exits nonzero. Grouped results match `/accounting`; `model,user` grouping has users outermost and models nested inside each user. `--today` and `-t` query the same records as `--period YYYY-MM-DD` for the UTC date captured during the run, and combining either with `--period` exits nonzero. The calendar-period query and equivalent date-only range select the same records. An unknown exact filter prints zero totals or no groups as appropriate. Queries do not create ledger rows. Each failure exits nonzero without prompting. Error output contains no credential or response body; command-line validation and missing-key errors do not print a traceback. Query parameters are URL encoded, including the comma in `model,user` and timezone slashes.
+**Expected:** The client accepts ungrouped totals and grouped summaries containing request and token counts. It prints `No matching records.` for empty grouped results and zero totals for empty ungrouped results. HTTP summaries and client output contain no pending or incomplete counters.
 
-**Evidence:** Save sanitized output, statuses, and fixture query strings. Verify the client output contains no key values and that the ledger row count is unchanged by queries.
+**Evidence:** Save sanitized script output and query JSON, confirming the grouped counts sum to the ungrouped counts.
 
-**Cleanup:** Stop processes, unset the test environment variable, and remove the test database/configuration and temporary HTTP fixture.
+**Cleanup:** Stop processes and remove local files.
 
-## Case 6: Fresh and legacy SQLite schemas without migration
+## Case 6: Fresh SQLite schema and enum enforcement
 
-**Setup:** Use one fresh state directory and a separate copy of a synthetic database created by an earlier version, with its legacy `background` column and `accounting_state_idx` index. Do not migrate or alter the legacy database before starting the current proxy.
+**Setup:** Start and stop the proxy with a fresh state directory. Do not reuse an older accounting database; no migration or backward compatibility is provided.
 
-**Actions:** Start and stop the proxy with the fresh directory. Inspect `PRAGMA table_info(accounting_requests)` and `PRAGMA index_list(accounting_requests)`. Start the proxy directly against the legacy database and inspect those PRAGMAs before and after startup. Admit a new create request and query accounting against each database.
+**Actions:** Inspect `PRAGMA table_info(accounting_requests)`, `PRAGMA index_list(accounting_requests)`, and the table's CREATE statement in `sqlite_master`. With the proxy stopped, insert otherwise-valid synthetic records using each allowed `incomplete_reason`, then attempt an insert using `arbitrary_reason`. Also try an invalid `kind` and a negative token counter.
 
-**Expected:** A fresh database has no `background` column or `accounting_state_idx` index. The legacy database remains usable without migration and retains its `background` column and `accounting_state_idx` index; startup does not drop or rebuild either. New admissions omit the legacy column and use its existing `0` default. Both databases accept new rows and return accounting aggregates.
+**Expected:** The schema keeps `http_status`, `response_status`, `kind`, and `outcome`. It has no saved response ID, pending state, or usage-known column. SQLite accepts only the reasons `''`, `transport_error`, `response_read_error`, `client_disconnected`, `stream_ended`, `nonterminal_response`, and `invalid_response`. CHECK constraints reject the arbitrary reason, invalid kind, and negative counter. No response-ID or polling-state index exists. Startup never migrates or repairs an older schema; no compatibility outcome is promised for it.
 
-**Evidence:** Save sanitized PRAGMA output, client statuses, and aggregate counts before and after each admission. Do not include raw request rows or credentials.
+**Evidence:** Save sanitized schema/index descriptions, numeric row counts, and constraint failure categories. Use synthetic data only.
 
-**Cleanup:** Stop processes and remove both local databases and configs.
+**Cleanup:** Remove the local database and configs.
