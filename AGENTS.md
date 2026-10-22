@@ -16,7 +16,7 @@
 - `internal/auth` holds the atomically replaceable user-key map; `internal/admin` implements key reload over the private Unix socket in `state_dir`.
 - `internal/proxy` handles supported routes, upstream HTTP, retries, streaming, and the accounting query endpoint. Retrieval routes only forward upstream.
 - `internal/accounting` owns the SQLite schema, one-shot request records, token parsing, and aggregate/time filtering; `internal/logging` owns log filtering and output.
-- `cmd/mock-upstream` is the synthetic upstream used by the manual scenarios. Human- and AI-agent-readable test specifications are indexed in `docs/manual-testing/README.md`.
+- `cmd/mock-upstream` is an optional synthetic upstream for interactive development. Automated test conventions and scenario coverage are documented in `docs/testing.md`.
 
 ## Contracts to preserve
 
@@ -35,8 +35,8 @@
 - The schema and accounting response need not support older versions. Use a fresh database after this simplification; do not add migrations or legacy-schema compatibility. Aggregate summaries expose request and token counts without pending/incomplete counters.
 - The default `upstream_errors` log level includes upstream HTTP/transport errors, retry events, and service/accounting errors while omitting downstream authentication failures. Never log credentials or request/response bodies. Keep HTTP status logs to sanitized metadata, and sanitize transport errors before logging because raw URL errors can include query strings or response ID paths.
 
-## Manual validation and documentation
+## Automated validation and documentation
 
-- The project uses manual AI-agent test specifications and the synthetic mock, not a traditional unit-test suite. When the user authorizes validation, start with `docs/manual-testing/README.md`, use only synthetic data with the mock, and clean up local processes and state afterward.
-- Update the relevant manual specification when a behavior or invariant changes. Keep `README.md`, the example YAML files, and the manual specifications consistent with `internal/config` and the implemented API.
+- The project uses standard Go package and integration tests. When the user authorizes validation, start with `docs/testing.md`, run `go test ./...` and `go test -race ./...` as authorized, use only local synthetic fixtures, and clean up local processes and state afterward.
+- Update the relevant automated tests and coverage documentation when a behavior or invariant changes. Keep `README.md`, the example YAML files, and `docs/testing.md` consistent with `internal/config` and the implemented API. Keep expected results explicit and independent of production calculations. Build/version metadata and Python scripts are outside the automated suite; retain `cmd/mock-upstream` as an optional developer tool.
 - Live upstream checks require separate authorization. Use only `gpt-6-luna`, keep credentials supplied at runtime in a private local config, and exclude credentials, prompts, and response text from source files, logs, and reports. Do not encode internal service addresses or credentials in repository docs.

@@ -110,9 +110,16 @@ See the example configuration for all settings. The default `upstream_errors` lo
 
 The default retry delay is 30 seconds with five retries. Connection and TLS handshake timeouts default to 10 seconds. Response-header and total-request timeouts are disabled by default to allow long streaming responses to finish. A request-body limit defaults to 64 MiB.
 
-## Manual testing
+## Testing
 
-This repository provides AI-agent-readable manual test specifications and a local mock upstream; it does not include a traditional unit-test suite. Start with [docs/manual-testing/README.md](docs/manual-testing/README.md). The mock helper can queue HTTP responses, delays, and SSE events; inspect received requests with authorization values redacted; and generate a local CA for HTTPS checks.
+Run the automated Go tests with local synthetic fixtures:
+
+```sh
+go test ./...
+go test -race ./...
+```
+
+See [docs/testing.md](docs/testing.md) for prerequisites, test conventions, and the mapping from the former manual scenarios to automated coverage. The standalone `cmd/mock-upstream` remains available as an optional developer tool; the test suite starts its own isolated fixtures. Build/version metadata and the Python accounting client are outside the suite's coverage.
 
 ## Operational notes
 
