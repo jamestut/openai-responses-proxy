@@ -16,7 +16,7 @@
 - `internal/auth` holds the atomically replaceable user-key map; `internal/admin` implements key reload over the private Unix socket in `state_dir`.
 - `internal/proxy` handles supported routes, upstream HTTP, retries, streaming, and the accounting query endpoint. Retrieval routes only forward upstream.
 - `internal/accounting` owns the SQLite schema, one-shot request records, token parsing, and aggregate/time filtering; `internal/logging` owns log filtering and output.
-- `cmd/mock-upstream` is an optional synthetic upstream for interactive development. Automated test conventions and scenario coverage are documented in `docs/testing.md`.
+- `cmd/mock-upstream` is an optional synthetic upstream for interactive development.
 
 ## Contracts to preserve
 
@@ -37,6 +37,7 @@
 
 ## Automated validation and documentation
 
-- The project uses standard Go package and integration tests. When the user authorizes validation, start with `docs/testing.md`, run `go test ./...` and `go test -race ./...` as authorized, use only local synthetic fixtures, and clean up local processes and state afterward.
-- Update the relevant automated tests and coverage documentation when a behavior or invariant changes. Keep `README.md`, the example YAML files, and `docs/testing.md` consistent with `internal/config` and the implemented API. Keep expected results explicit and independent of production calculations. Build/version metadata and Python scripts are outside the automated suite; retain `cmd/mock-upstream` as an optional developer tool.
+- The project uses standard Go package and integration tests. When the user authorizes validation, run `go test ./...` and `go test -race ./...` as authorized, use only local synthetic fixtures, and clean up local processes and state afterward.
+- Keep tests self-documenting: name them after the behavior and expected result, keep setup, action, and assertions in reading order, and use literal expected values independent of production calculations. Add comments only for non-obvious scenario intent. Build/version metadata and Python scripts are outside the automated suite; retain `cmd/mock-upstream` as an optional developer tool.
+- Keep `README.md`, the example YAML files, and the implementation consistent.
 - Live upstream checks require separate authorization. Use only `gpt-6-luna`, keep credentials supplied at runtime in a private local config, and exclude credentials, prompts, and response text from source files, logs, and reports. Do not encode internal service addresses or credentials in repository docs.

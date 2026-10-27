@@ -86,10 +86,22 @@ The default `upstream_errors` log level includes upstream HTTP and transport err
 
 The service drains handlers up to `timeouts.shutdown` during shutdown. If the deadline expires, active work is stopped. Use a fresh database for this version; older schemas are unsupported and are not migrated.
 
-## Further reference
-
-See [docs/testing.md](docs/testing.md) for automated test conventions and local fixture coverage. `cmd/mock-upstream` is available as an optional developer tool.
-
 ## Build from source
 
 With Go 1.24 or newer, run `./scripts/build.sh` from the repository root to write `bin/responses-proxy`. Run `bin/responses-proxy version` to display its build information.
+
+## Run tests
+
+With Go 1.24 or newer, run the Go test suite from the repository root:
+
+```sh
+go test ./...
+```
+
+To also check for data races, run:
+
+```sh
+go test -race ./...
+```
+
+For interactive development, `cmd/mock-upstream` provides a local synthetic upstream.
