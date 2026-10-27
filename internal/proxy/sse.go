@@ -88,11 +88,8 @@ func (s *Server) serveSSE(w http.ResponseWriter, requestContext context.Context,
 		}
 		if err != nil {
 			streamErr = err
-			if !errors.Is(err, io.EOF) {
-				break
-			}
 			if len(event) > 0 {
-				// Incomplete EOF frames are forwarded byte-for-byte and never update usage.
+				// Incomplete frames are forwarded but never update usage.
 				if _, writeErr := w.Write(event); writeErr != nil {
 					clientDisconnected = true
 					streamErr = writeErr

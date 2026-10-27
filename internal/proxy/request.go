@@ -1,13 +1,13 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"openai-responses-proxy/internal/accounting"
@@ -81,12 +81,14 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user stri
 			"category", upstreamHTTPErrorCategory(response.StatusCode))
 	}
 
-	if strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+	responseBodyReader, isSSE := sniffResponseFormat(response.Body)
+	if isSSE {
+		response.Body = io.NopCloser(responseBodyReader)
 		result = s.serveSSE(w, r.Context(), response)
 		result.HTTPStatus = response.StatusCode
 		return
 	}
-	responseBody, readErr := io.ReadAll(response.Body)
+	responseBody, readErr := io.ReadAll(responseBodyReader)
 	info := parseResponse(responseBody)
 	if response.StatusCode >= 400 && info.Status == "" {
 		info.Status = "failed"
@@ -107,6 +109,48 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user stri
 	if readErr != nil && r.Context().Err() == nil {
 		s.logger.UpstreamError("upstream response body ended early", "error", "response read error")
 	}
+}
+
+const responseFormatLookahead = 4 * 1024
+
+// sniffResponseFormat recognizes JSON by its first non-whitespace byte and
+// treats other non-empty prefixes as SSE. It replays every inspected byte.
+func sniffResponseFormat(body io.Reader) (io.Reader, bool) {
+	reader := bufio.NewReaderSize(body, responseFormatLookahead)
+	prefix := make([]byte, 0, responseFormatLookahead)
+	isSSE := false
+	var readErr error
+	for len(prefix) < responseFormatLookahead {
+		b, err := reader.ReadByte()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
+		prefix = append(prefix, b)
+		switch b {
+		case '{', '[':
+			return io.MultiReader(bytes.NewReader(prefix), reader), false
+		case ' ', '\t', '\n', '\r':
+			continue
+		default:
+			isSSE = true
+		}
+		break
+	}
+	if readErr != nil {
+		return io.MultiReader(bytes.NewReader(prefix), responseReadError{err: readErr}), isSSE
+	}
+	return io.MultiReader(bytes.NewReader(prefix), reader), isSSE
+}
+
+type responseReadError struct {
+	err error
+}
+
+func (r responseReadError) Read([]byte) (int, error) {
+	return 0, r.err
 }
 
 func responseResult(info responseInfo, httpStatus int) accounting.Result {

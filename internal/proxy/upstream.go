@@ -47,6 +47,8 @@ func (s *Server) doWithRetries(ctx context.Context, target *url.URL, headers htt
 		} else if err := s.applyCommandHeaders(ctx, request.Header); err != nil {
 			return previousResponse, err
 		}
+		// Request identity encoding so response format sniffing sees the original JSON or SSE bytes.
+		request.Header.Set("Accept-Encoding", "identity")
 		if body != nil {
 			request.ContentLength = int64(len(body))
 		}

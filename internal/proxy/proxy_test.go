@@ -203,12 +203,13 @@ func waitRecords(t *testing.T, h *testHarness, count int) []storedRecord {
 func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	var calls atomic.Int32
 	var gotMu sync.Mutex
-	var gotPath, gotQuery, gotBody, gotAuthorization, gotProxyAuthorization, gotConnectionToken, gotForwarded string
+	var gotPath, gotQuery, gotBody, gotAuthorization, gotProxyAuthorization, gotConnectionToken, gotForwarded, gotAcceptEncoding string
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		gotMu.Lock()
 		gotPath, gotQuery, gotAuthorization = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		gotConnectionToken = r.Header.Get("X-Connection-Private")
+		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
 		gotProxyAuthorization = r.Header.Get("Proxy-Authorization")
 		gotForwarded = r.Header.Get("X-Forwarded-Test")
 		body, _ := io.ReadAll(r.Body)
@@ -225,7 +226,7 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 		cfg.MaxRequestBodyBytes = 128
 	})
 	body := `{"model":"request-model","stream":false}`
-	headers := http.Header{"X-Forwarded-Test": []string{"kept"}, "X-Connection-Private": []string{"removed"}, "Connection": []string{"X-Connection-Private"}, "Proxy-Authorization": []string{"Bearer downstream-proxy-secret"}}
+	headers := http.Header{"X-Forwarded-Test": []string{"kept"}, "X-Connection-Private": []string{"removed"}, "Connection": []string{"X-Connection-Private"}, "Proxy-Authorization": []string{"Bearer downstream-proxy-secret"}, "Accept-Encoding": []string{"gzip"}}
 	resp := h.do(t, http.MethodPost, "/v1/responses?tag=synthetic%20value", "alice-test-key", body, headers)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -234,7 +235,7 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	gotMu.Lock()
 	requestPath, requestQuery, requestBody := gotPath, gotQuery, gotBody
 	requestAuthorization, requestProxyAuthorization := gotAuthorization, gotProxyAuthorization
-	requestConnectionToken, requestForwarded := gotConnectionToken, gotForwarded
+	requestConnectionToken, requestForwarded, requestAcceptEncoding := gotConnectionToken, gotForwarded, gotAcceptEncoding
 	gotMu.Unlock()
 	if requestPath != "/testing" || requestQuery != "tag=synthetic%20value" || requestBody != body {
 		t.Fatalf("upstream request mismatch: path=%q query=%q body_bytes=%d", requestPath, requestQuery, len(requestBody))
@@ -245,8 +246,8 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	if resp.Header.Get("Connection") != "" || resp.Header.Get("X-Upstream-Hop") != "" || resp.Header.Get("X-Upstream-End-To-End") != "kept" {
 		t.Error("response hop-by-hop filtering removed the wrong headers")
 	}
-	if requestAuthorization != "Bearer upstream-test-secret" || requestConnectionToken != "" || requestForwarded != "kept" {
-		t.Fatalf("upstream credential replacement or hop filtering failed (authorization_replaced=%t, connection_token_removed=%t, end_to_end_header_kept=%t)", requestAuthorization == "Bearer upstream-test-secret", requestConnectionToken == "", requestForwarded == "kept")
+	if requestAuthorization != "Bearer upstream-test-secret" || requestConnectionToken != "" || requestForwarded != "kept" || requestAcceptEncoding != "identity" {
+		t.Fatalf("upstream request headers mismatch (authorization_replaced=%t, connection_token_removed=%t, end_to_end_header_kept=%t, accept_encoding_identity=%t)", requestAuthorization == "Bearer upstream-test-secret", requestConnectionToken == "", requestForwarded == "kept", requestAcceptEncoding == "identity")
 	}
 	unauthorized := h.do(t, http.MethodPost, "/v1/responses", "wrong-key", `{}`, nil)
 	if unauthorized.StatusCode != http.StatusUnauthorized {
@@ -287,7 +288,7 @@ func TestCommandHeadersReplaceClientCredentialsAndRunForEachAttempt(t *testing.T
 	callLog := filepath.Join(t.TempDir(), "calls")
 	h := newHarnessWithUpstream(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.Header.Get("Authorization") == "Bearer command-secret" && r.Header.Get("X-Command") == "present" && r.Header.Get("Proxy-Authorization") == "" {
+		if r.Header.Get("Authorization") == "Bearer command-secret" && r.Header.Get("X-Command") == "present" && r.Header.Get("Proxy-Authorization") == "" && r.Header.Get("Accept-Encoding") == "identity" {
 			authorizationOK.Store(true)
 		}
 		if calls.Load() == 1 {
@@ -357,7 +358,7 @@ func TestProxyHeaderCommandHelper(t *testing.T) {
 			_ = file.Close()
 		}
 	}
-	_, _ = io.WriteString(os.Stdout, `{"Authorization":"Bearer command-secret","X-Command":"present"}`)
+	_, _ = io.WriteString(os.Stdout, `{"Authorization":"Bearer command-secret","X-Command":"present","Accept-Encoding":"gzip"}`)
 	os.Exit(0)
 }
 

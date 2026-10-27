@@ -51,6 +51,8 @@ curl http://127.0.0.1:8080/v1/responses \
 
 The proxy forwards only `POST /v1/responses` to the configured upstream endpoint. It preserves the incoming query and request body, and it forwards streaming responses. The upstream determines which models are available. The proxy does not support other API routes.
 
+The proxy requests uncompressed upstream responses by setting `Accept-Encoding: identity`, overriding any client or header command value. It inspects the response body to select JSON or SSE accounting. If the upstream sends compressed content despite this request, token usage may not be recorded.
+
 The proxy retries only upstream `429` responses. `retry.max_retries` counts retries after the first attempt. For each retry, it independently adds or subtracts up to 20 percent of the configured delay. The proxy returns other upstream HTTP errors as received. A downstream disconnect cancels the active request.
 
 ## Query accounting
