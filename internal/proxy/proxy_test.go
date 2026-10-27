@@ -281,6 +281,86 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	}
 }
 
+func TestCommandHeadersReplaceClientCredentialsAndRunForEachAttempt(t *testing.T) {
+	var calls atomic.Int32
+	var authorizationOK atomic.Bool
+	callLog := filepath.Join(t.TempDir(), "calls")
+	h := newHarnessWithUpstream(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Authorization") == "Bearer command-secret" && r.Header.Get("X-Command") == "present" && r.Header.Get("Proxy-Authorization") == "" {
+			authorizationOK.Store(true)
+		}
+		if calls.Load() == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_command","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}), func(cfg *config.Config) {
+		cfg.Upstream.APIKey = ""
+		cfg.Upstream.HeaderCommand = []string{os.Args[0], "-test.run=TestProxyHeaderCommandHelper", "--", "record", callLog}
+		cfg.Retry.MaxRetries = 1
+		cfg.Retry.Delay = 0
+	})
+	response := h.do(t, http.MethodPost, "/v1/responses", "alice-test-key", `{"model":"m"}`, http.Header{
+		"Proxy-Authorization": {"Bearer downstream-proxy-secret"},
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.StatusCode, responseBody(t, response))
+	}
+	_ = responseBody(t, response)
+	if calls.Load() != 2 || !authorizationOK.Load() {
+		t.Fatalf("upstream attempts = %d, command headers applied = %v; want 2 and true", calls.Load(), authorizationOK.Load())
+	}
+	commandCalls, err := os.ReadFile(callLog)
+	if err != nil || strings.Count(string(commandCalls), "attempt\n") != 2 {
+		t.Fatalf("header command invocations = %q, error = %v; want two invocations", commandCalls, err)
+	}
+}
+
+// A failed header command must not reach upstream or expose its output in the gateway response.
+func TestCommandHeaderFailureDoesNotReachUpstream(t *testing.T) {
+	var calls atomic.Int32
+	h := newHarnessWithUpstream(t, "", http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }), func(cfg *config.Config) {
+		cfg.Upstream.APIKey = ""
+		cfg.Upstream.HeaderCommand = []string{os.Args[0], "-test.run=TestProxyHeaderCommandHelper", "--", "invalid"}
+	})
+	response := h.do(t, http.MethodPost, "/v1/responses", "alice-test-key", `{"model":"m"}`, nil)
+	body := responseBody(t, response)
+	if response.StatusCode != http.StatusBadGateway || calls.Load() != 0 || strings.Contains(body, "invalid-command-output-marker") {
+		t.Fatalf("status = %d, upstream calls = %d, body = %q; want sanitized 502 and no upstream call", response.StatusCode, calls.Load(), body)
+	}
+}
+
+// This test binary is re-entered as a subprocess to provide synthetic header-command output.
+func TestProxyHeaderCommandHelper(t *testing.T) {
+	separator := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 || separator+1 >= len(os.Args) {
+		return
+	}
+	args := os.Args[separator+1:]
+	mode := args[0]
+	if mode == "invalid" {
+		_, _ = io.WriteString(os.Stdout, "invalid-command-output-marker")
+		os.Exit(0)
+	}
+	if mode == "record" && len(args) > 1 {
+		file, err := os.OpenFile(args[1], os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err == nil {
+			_, _ = io.WriteString(file, "attempt\n")
+			_ = file.Close()
+		}
+	}
+	_, _ = io.WriteString(os.Stdout, `{"Authorization":"Bearer command-secret","X-Command":"present"}`)
+	os.Exit(0)
+}
+
 // Only POST /v1/responses is supported; other Responses routes and methods must be rejected locally.
 func TestUnsupportedRoutesAndMethodsAreRejected(t *testing.T) {
 	var calls atomic.Int32

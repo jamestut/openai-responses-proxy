@@ -4,7 +4,7 @@ OpenAI Responses Proxy authenticates local users, forwards Responses API create 
 
 ## Configure
 
-Copy [the example proxy configuration](examples/proxy.example.yaml) and [the example users file](examples/users.example.yaml) to a private directory. Replace the upstream API key and example user keys, then restrict access to both files:
+Copy [the example proxy configuration](examples/proxy.example.yaml) and [the example users file](examples/users.example.yaml) to a private directory. Configure the upstream credential source and replace the example user keys, then restrict access to both files:
 
 ```sh
 cp examples/proxy.example.yaml /path/to/proxy.yaml
@@ -12,9 +12,11 @@ cp examples/users.example.yaml /path/to/users.yaml
 chmod 600 /path/to/proxy.yaml /path/to/users.yaml
 ```
 
-The proxy configuration requires `upstream.base_url`, `upstream.api_key`, and `users_file`. Set `upstream.base_url` to the complete upstream Responses endpoint, such as `https://api.openai.com/v1/responses`. The proxy removes a trailing slash. It sends the configured credential upstream as a Bearer token and verifies the upstream TLS certificate and hostname. Set `upstream.ca_file` to trust a private CA when needed.
+The proxy configuration requires `upstream.base_url`, exactly one of `upstream.api_key` or `upstream.header_command`, and `users_file`. Set `upstream.base_url` to the complete upstream Responses endpoint, such as `https://api.openai.com/v1/responses`. The proxy removes a trailing slash and verifies the upstream TLS certificate and hostname. Set `upstream.ca_file` to trust a private CA when needed.
 
-The users file maps each username to one or more `api_keys`. A client presents one of these keys as `Authorization: Bearer ...`. The proxy records the username and replaces that credential with the upstream key. Each key must be unique, and every user must have at least one key.
+The proxy sends `upstream.api_key` as a Bearer token. Alternatively, `upstream.header_command` is a YAML argument list for an executable that prints a JSON object of header names to string values, such as `{"Authorization":"Bearer ...","X-Tenant":"..."}`. The command runs for every upstream attempt, including retries, so it must support concurrent invocations. Its headers replace matching client headers, and it may omit `Authorization` when the upstream does not require it. A command failure returns a gateway error, and a client disconnect cancels the command. The proxy does not log command output or headers.
+
+The users file maps each username to one or more `api_keys`. A client presents one of these keys as `Authorization: Bearer ...`. The proxy records the username and removes that credential before forwarding. Each key must be unique, and every user must have at least one key.
 
 See the example for optional listener, retry, timeout, logging, maximum request body size, and state directory settings. Durations use Go syntax such as `30s`. Relative paths for `users_file`, `upstream.ca_file`, `state_dir`, and a file logging destination resolve from the directory containing `proxy.yaml`, even when the process starts from another directory. The YAML files use strict decoding, so unknown fields cause an error.
 

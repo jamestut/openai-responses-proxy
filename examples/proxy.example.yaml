@@ -3,6 +3,9 @@ upstream:
   # Complete Responses endpoint; any trailing slash is removed.
   base_url: https://api.openai.com/v1/responses
   api_key: replace-with-your-upstream-api-key
+  # Instead of api_key, use an argument list that prints a JSON string header map.
+  # The command runs once per upstream attempt and may run concurrently.
+  # header_command: ["codex-chatgpt", "token"]
   # Optional private CA bundle; upstream certificates are always verified.
   # ca_file: ./upstream-ca.pem
 users_file: ./users.yaml

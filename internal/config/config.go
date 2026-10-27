@@ -28,9 +28,10 @@ type Config struct {
 }
 
 type Upstream struct {
-	BaseURL string `yaml:"base_url"`
-	APIKey  string `yaml:"api_key"`
-	CAFile  string `yaml:"ca_file"`
+	BaseURL       string   `yaml:"base_url"`
+	APIKey        string   `yaml:"api_key"`
+	HeaderCommand []string `yaml:"header_command"`
+	CAFile        string   `yaml:"ca_file"`
 }
 
 type Retry struct {
@@ -106,9 +107,17 @@ func Load(path string) (Config, error) {
 	if err := decodeStrict(data, &raw); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	apiKeySet := strings.TrimSpace(raw.Upstream.APIKey) != ""
+	headerCommandSet := len(raw.Upstream.HeaderCommand) > 0
+	if apiKeySet == headerCommandSet {
+		return Config{}, errors.New("exactly one of upstream.api_key or upstream.header_command must be configured")
+	}
 	// The upstream key becomes one Bearer credential, so whitespace would change its wire representation.
-	if strings.TrimSpace(raw.Upstream.APIKey) == "" || strings.ContainsAny(raw.Upstream.APIKey, " \t\r\n") {
+	if apiKeySet && strings.ContainsAny(raw.Upstream.APIKey, " \t\r\n") {
 		return Config{}, errors.New("upstream.api_key must be a nonempty bearer token without whitespace")
+	}
+	if headerCommandSet && strings.TrimSpace(raw.Upstream.HeaderCommand[0]) == "" {
+		return Config{}, errors.New("upstream.header_command must start with a nonempty executable")
 	}
 	baseURL, err := parseUpstreamURL(raw.Upstream.BaseURL)
 	if err != nil {
@@ -180,7 +189,7 @@ func Load(path string) (Config, error) {
 	}
 	return Config{
 		Listen:              raw.Listen,
-		Upstream:            Upstream{BaseURL: baseURL.String(), APIKey: raw.Upstream.APIKey, CAFile: caFile},
+		Upstream:            Upstream{BaseURL: baseURL.String(), APIKey: raw.Upstream.APIKey, HeaderCommand: raw.Upstream.HeaderCommand, CAFile: caFile},
 		UsersFile:           usersFile,
 		StateDir:            stateDir,
 		Retry:               Retry{Delay: delay, MaxRetries: raw.Retry.MaxRetries},

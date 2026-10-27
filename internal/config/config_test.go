@@ -112,6 +112,23 @@ logging:
 	}
 }
 
+// A header command replaces the static upstream API key and retains its argument boundaries.
+func TestLoadUpstreamHeaderCommand(t *testing.T) {
+	dir := t.TempDir()
+	contents := `upstream:
+  base_url: http://upstream.example/proxy/v1/responses
+  header_command: ["credential-helper", "--format", "authorization"]
+users_file: ./users.yaml
+`
+	cfg, err := Load(writeConfig(t, dir, contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Upstream.APIKey != "" || !reflect.DeepEqual(cfg.Upstream.HeaderCommand, []string{"credential-helper", "--format", "authorization"}) {
+		t.Errorf("upstream credentials = api_key %q, header_command %q", cfg.Upstream.APIKey, cfg.Upstream.HeaderCommand)
+	}
+}
+
 // Strict decoding should reject misspelled, removed, and second-document settings instead of silently ignoring them.
 func TestLoadRejectsUnknownRemovedAndMultipleDocumentFields(t *testing.T) {
 	cases := []struct {
@@ -140,6 +157,9 @@ func TestLoadRejectsInvalidMainConfiguration(t *testing.T) {
 	}{
 		{"empty_upstream_key", "api_key: mock-upstream-key", "api_key: '  '"},
 		{"whitespace_upstream_key", "api_key: mock-upstream-key", "api_key: 'mock key'"},
+		{"missing_upstream_credential", "  api_key: mock-upstream-key\n", ""},
+		{"api_key_and_header_command", "  api_key: mock-upstream-key", "  api_key: mock-upstream-key\n  header_command: [credential-helper]"},
+		{"empty_header_command_executable", "  api_key: mock-upstream-key", "  header_command: [' ']"},
 		{"missing_users_file", "users_file: ./users.yaml", "users_file: ' '"},
 		{"invalid_listen", "", "listen: 127.0.0.1:0\n"},
 		{"negative_retries", "", "retry:\n  max_retries: -1\n"},
