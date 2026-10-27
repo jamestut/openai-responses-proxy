@@ -10,7 +10,7 @@ import (
 )
 
 const validConfigYAML = `upstream:
-  base_url: http://upstream.example/proxy/v1
+  base_url: http://upstream.example/proxy/v1/responses
   api_key: mock-upstream-key
 users_file: ./users.yaml
 `
@@ -24,6 +24,17 @@ func writeConfig(t *testing.T, dir, contents string) string {
 	return path
 }
 
+func TestLoadPreservesEscapedUpstreamPath(t *testing.T) {
+	contents := strings.Replace(validConfigYAML, "http://upstream.example/proxy/v1/responses", "http://upstream.example/tenant%2Fname%2F/", 1)
+	cfg, err := Load(writeConfig(t, t.TempDir(), contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Upstream.BaseURL != "http://upstream.example/tenant%2Fname%2F" {
+		t.Fatalf("upstream URL = %q", cfg.Upstream.BaseURL)
+	}
+}
+
 // Loading a minimal config should apply documented defaults and resolve every relative file path beside that config.
 func TestLoadDefaultsAndResolvesRelativePathsFromConfig(t *testing.T) {
 	dir := t.TempDir()
@@ -33,7 +44,7 @@ func TestLoadDefaultsAndResolvesRelativePathsFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := `upstream:
-  base_url: http://upstream.example/proxy/
+  base_url: http://upstream.example/proxy/v1/responses/
   api_key: mock-upstream-key
   ca_file: ./ca.pem
 users_file: ./users.yaml
@@ -45,7 +56,7 @@ logging:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:8080" || cfg.Upstream.BaseURL != "http://upstream.example/proxy" || cfg.Upstream.APIKey != "mock-upstream-key" {
+	if cfg.Listen != "127.0.0.1:8080" || cfg.Upstream.BaseURL != "http://upstream.example/proxy/v1/responses" || cfg.Upstream.APIKey != "mock-upstream-key" {
 		t.Errorf("unexpected listen/upstream defaults: listen=%q base_url=%q api_key_present=%t", cfg.Listen, cfg.Upstream.BaseURL, cfg.Upstream.APIKey != "")
 	}
 	if cfg.UsersFile != filepath.Join(dir, "users.yaml") || cfg.StateDir != filepath.Join(dir, "private-state") || cfg.Upstream.CAFile != caPath || cfg.Logging.Destination != filepath.Join(dir, "proxy.log") {
@@ -68,7 +79,7 @@ func TestLoadExplicitZeroDurationsAndAbsolutePaths(t *testing.T) {
 	absUsers := filepath.Join(dir, "absolute-users.yaml")
 	contents := `listen: 127.0.0.1:12345
 upstream:
-  base_url: https://upstream.example/prefix/v1
+  base_url: https://upstream.example/prefix/v1/responses
   api_key: mock-key
 users_file: ` + absUsers + `
 state_dir: ./state
@@ -93,7 +104,7 @@ logging:
 	if cfg.UsersFile != absUsers || cfg.StateDir != filepath.Join(dir, "state") {
 		t.Errorf("paths = users %q, state %q", cfg.UsersFile, cfg.StateDir)
 	}
-	if cfg.Listen != "127.0.0.1:12345" || cfg.Upstream.BaseURL != "https://upstream.example/prefix/v1" || cfg.Logging.Level != "info" {
+	if cfg.Listen != "127.0.0.1:12345" || cfg.Upstream.BaseURL != "https://upstream.example/prefix/v1/responses" || cfg.Logging.Level != "info" {
 		t.Errorf("explicit values differ: listen=%q base_url=%q level=%q", cfg.Listen, cfg.Upstream.BaseURL, cfg.Logging.Level)
 	}
 	if cfg.Retry != (Retry{MaxRetries: 0}) || cfg.Timeouts != (Timeouts{Shutdown: time.Millisecond}) || cfg.MaxRequestBodyBytes != 1 {
@@ -133,9 +144,9 @@ func TestLoadRejectsInvalidMainConfiguration(t *testing.T) {
 		{"invalid_listen", "", "listen: 127.0.0.1:0\n"},
 		{"negative_retries", "", "retry:\n  max_retries: -1\n"},
 		{"zero_body_limit", "", "max_request_body_bytes: 0\n"},
-		{"invalid_upstream_scheme", "http://upstream.example/proxy/v1", "ftp://upstream.example/proxy/v1"},
-		{"upstream_query", "http://upstream.example/proxy/v1", "http://upstream.example/proxy/v1?secret=value"},
-		{"upstream_credentials", "http://upstream.example/proxy/v1", "http://user:pass@upstream.example/proxy/v1"},
+		{"invalid_upstream_scheme", "http://upstream.example/proxy/v1/responses", "ftp://upstream.example/proxy/v1/responses"},
+		{"upstream_query", "http://upstream.example/proxy/v1/responses", "http://upstream.example/proxy/v1/responses?secret=value"},
+		{"upstream_credentials", "http://upstream.example/proxy/v1/responses", "http://user:pass@upstream.example/proxy/v1/responses"},
 		{"negative_retry_delay", "", "retry:\n  delay: -1s\n"},
 		{"invalid_retry_duration", "", "retry:\n  delay: next\n"},
 		{"negative_connect_timeout", "", "timeouts:\n  connect: -1s\n"},

@@ -75,7 +75,7 @@ func newHarnessWithUpstream(t *testing.T, upstreamURL string, upstreamHandler ht
 	if upstreamHandler != nil {
 		upstream = httptest.NewServer(upstreamHandler)
 		if upstreamURL == "" {
-			upstreamURL = upstream.URL + "/v1"
+			upstreamURL = upstream.URL + "/v1/responses"
 		}
 	}
 	if upstream == nil && upstreamURL == "" {
@@ -152,7 +152,7 @@ func responseBody(t *testing.T, response *http.Response) string {
 }
 
 type storedRecord struct {
-	user, model, kind, status, outcome, reason          string
+	user, model, status, outcome, reason                string
 	httpStatus                                          int
 	input, output, total, cached, cacheWrite, reasoning int64
 }
@@ -164,7 +164,7 @@ func records(t *testing.T, dbPath string) []storedRecord {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT username, model, kind, http_status, response_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason FROM accounting_requests ORDER BY started_at_us`)
+	rows, err := db.Query(`SELECT username, model, http_status, response_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason FROM accounting_requests ORDER BY started_at_us`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func records(t *testing.T, dbPath string) []storedRecord {
 	var result []storedRecord
 	for rows.Next() {
 		var r storedRecord
-		if err := rows.Scan(&r.user, &r.model, &r.kind, &r.httpStatus, &r.status, &r.outcome, &r.input, &r.output, &r.total, &r.cached, &r.cacheWrite, &r.reasoning, &r.reason); err != nil {
+		if err := rows.Scan(&r.user, &r.model, &r.httpStatus, &r.status, &r.outcome, &r.input, &r.output, &r.total, &r.cached, &r.cacheWrite, &r.reasoning, &r.reason); err != nil {
 			t.Fatal(err)
 		}
 		result = append(result, r)
@@ -198,7 +198,7 @@ func waitRecords(t *testing.T, h *testHarness, count int) []storedRecord {
 	}
 }
 
-// A create must preserve its path prefix, query, body, and end-to-end headers while replacing credentials.
+// A create must preserve the configured endpoint, query, body, and end-to-end headers while replacing credentials.
 // Local auth, route, and size rejections must not reach upstream; size rejection records HTTP status 0.
 func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	var calls atomic.Int32
@@ -221,7 +221,7 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":"resp_test","object":"response","status":"completed","model":"gpt-6-luna","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`)
 	})
 	h := newHarnessWithUpstream(t, "", upstream, func(cfg *config.Config) {
-		cfg.Upstream.BaseURL = strings.Replace(cfg.Upstream.BaseURL, "/v1", "/prefix/v1", 1)
+		cfg.Upstream.BaseURL = strings.Replace(cfg.Upstream.BaseURL, "/v1/responses", "/testing", 1)
 		cfg.MaxRequestBodyBytes = 128
 	})
 	body := `{"model":"request-model","stream":false}`
@@ -236,7 +236,7 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	requestAuthorization, requestProxyAuthorization := gotAuthorization, gotProxyAuthorization
 	requestConnectionToken, requestForwarded := gotConnectionToken, gotForwarded
 	gotMu.Unlock()
-	if requestPath != "/prefix/v1/responses" || requestQuery != "tag=synthetic%20value" || requestBody != body {
+	if requestPath != "/testing" || requestQuery != "tag=synthetic%20value" || requestBody != body {
 		t.Fatalf("upstream request mismatch: path=%q query=%q body_bytes=%d", requestPath, requestQuery, len(requestBody))
 	}
 	if requestProxyAuthorization != "" {
@@ -281,20 +281,18 @@ func TestProxyForwardingAuthenticationAndLocalRejection(t *testing.T) {
 	}
 }
 
-// Utility and retrieval routes must forward the requested method and path.
-// Even when their responses contain usage, they must not create accounting rows.
-func TestUtilityAndRetrievalRoutesForwardWithoutAccounting(t *testing.T) {
-	type received struct{ method, path string }
-	var mu sync.Mutex
-	var got []received
+// Only POST /v1/responses is supported; other Responses routes and methods must be rejected locally.
+func TestUnsupportedRoutesAndMethodsAreRejected(t *testing.T) {
+	var calls atomic.Int32
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		got = append(got, received{r.Method, r.URL.Path})
-		mu.Unlock()
-		_, _ = io.WriteString(w, `{"object":"response","status":"completed","usage":{"input_tokens":9,"total_tokens":9}}`)
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"object":"response","status":"completed"}`)
 	})
 	h := newHarnessWithUpstream(t, "", upstream, nil)
 	cases := []struct{ method, path string }{
+		{http.MethodGet, "/v1/responses"},
+		{http.MethodPut, "/v1/responses"},
+		{http.MethodPost, "/v1/responses/compact"},
 		{http.MethodPost, "/v1/responses/input_tokens"},
 		{http.MethodGet, "/v1/responses/resp_synthetic"},
 		{http.MethodDelete, "/v1/responses/resp_synthetic"},
@@ -303,43 +301,53 @@ func TestUtilityAndRetrievalRoutesForwardWithoutAccounting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		resp := h.do(t, tc.method, tc.path, "alice-test-key", `{}`, nil)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("%s %s status = %d", tc.method, tc.path, resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d, want 404", tc.method, tc.path, resp.StatusCode)
 		}
 		_ = responseBody(t, resp)
 	}
 	if len(waitRecords(t, h, 0)) != 0 {
-		t.Fatalf("utility routes created accounting rows: %+v", records(t, h.dbPath))
+		t.Fatalf("unsupported routes created accounting rows: %+v", records(t, h.dbPath))
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(got) != len(cases) {
-		t.Fatalf("upstream calls = %+v", got)
-	}
-	for i, tc := range cases {
-		if got[i] != (received{tc.method, tc.path}) {
-			t.Fatalf("upstream call %d = %+v, want %+v", i, got[i], tc)
-		}
+	if calls.Load() != 0 {
+		t.Fatalf("unsupported routes reached upstream %d times", calls.Load())
 	}
 }
 
-// Each JSON create or compact must record its own usage and diagnostic metadata once.
+func TestForwardingPreservesEscapedUpstreamPath(t *testing.T) {
+	gotPath := make(chan string, 1)
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.EscapedPath()
+		_, _ = io.WriteString(w, `{"object":"response","status":"completed"}`)
+	})
+	h := newHarnessWithUpstream(t, "", upstream, func(cfg *config.Config) {
+		cfg.Upstream.BaseURL = strings.Replace(cfg.Upstream.BaseURL, "/v1/responses", "/tenant%2Fname", 1)
+	})
+	resp := h.do(t, http.MethodPost, "/v1/responses", "alice-test-key", `{}`, nil)
+	_ = responseBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if path := <-gotPath; path != "/tenant%2Fname" {
+		t.Fatalf("upstream escaped path = %q", path)
+	}
+}
+
+// Each JSON create must record its own usage and diagnostic metadata once.
 // The cases distinguish missing usage, nonterminal responses, invalid JSON, and upstream errors.
-func TestJSONCreateCompactAndInvalidResponseOutcomes(t *testing.T) {
+func TestJSONCreateAndInvalidResponseOutcomes(t *testing.T) {
 	cases := []struct {
-		name, path, body, kind, model   string
+		name, path, body, model         string
 		httpStatus                      int
 		responseStatus, outcome, reason string
 		input, total                    int64
 	}{
-		{"completed create", "/v1/responses", `{"object":"response","status":"completed","model":"returned-model","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`, "create", "request-model", http.StatusOK, "completed", "completed", "", 2, 5},
-		{"completed compact", "/v1/responses/compact", `{"object":"response.compaction","status":"completed","model":"compact-model","usage":{"input_tokens":4,"total_tokens":4}}`, "compact", "request-model", http.StatusOK, "completed", "completed", "", 4, 4},
-		{"compact object without status", "/v1/responses/compact", `{"object":"response.compaction","model":"compact-model","usage":{"input_tokens":4,"total_tokens":4}}`, "compact", "request-model", http.StatusOK, "", "completed", "", 4, 4},
-		{"completed response without usage", "/v1/responses", `{"object":"response","status":"completed","model":"m"}`, "create", "request-model", http.StatusOK, "completed", "completed", "", 0, 0},
-		{"nonterminal JSON with usage", "/v1/responses", `{"object":"response","status":"queued","model":"m","usage":{"input_tokens":6,"total_tokens":6}}`, "create", "request-model", http.StatusOK, "queued", "incomplete", "nonterminal_response", 6, 6},
-		{"unrelated JSON", "/v1/responses", `{"ok":true}`, "create", "request-model", http.StatusOK, "", "incomplete", "invalid_response", 0, 0},
-		{"malformed JSON", "/v1/responses", `{`, "create", "request-model", http.StatusOK, "", "incomplete", "invalid_response", 0, 0},
-		{"HTTP error with usage", "/v1/responses", `{"object":"response","status":"in_progress","usage":{"input_tokens":99,"total_tokens":99}}`, "create", "request-model", http.StatusBadGateway, "in_progress", "failed", "", 99, 99},
+		{"completed create", "/v1/responses", `{"object":"response","status":"completed","model":"returned-model","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`, "request-model", http.StatusOK, "completed", "completed", "", 2, 5},
+		{"completed response without usage", "/v1/responses", `{"object":"response","status":"completed","model":"m"}`, "request-model", http.StatusOK, "completed", "completed", "", 0, 0},
+		{"nonterminal JSON with usage", "/v1/responses", `{"object":"response","status":"queued","model":"m","usage":{"input_tokens":6,"total_tokens":6}}`, "request-model", http.StatusOK, "queued", "incomplete", "nonterminal_response", 6, 6},
+		{"unrelated JSON", "/v1/responses", `{"ok":true}`, "request-model", http.StatusOK, "", "incomplete", "invalid_response", 0, 0},
+		{"malformed JSON", "/v1/responses", `{`, "request-model", http.StatusOK, "", "incomplete", "invalid_response", 0, 0},
+		{"HTTP error with usage", "/v1/responses", `{"object":"response","status":"in_progress","usage":{"input_tokens":99,"total_tokens":99}}`, "request-model", http.StatusBadGateway, "in_progress", "failed", "", 99, 99},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -357,7 +365,7 @@ func TestJSONCreateCompactAndInvalidResponseOutcomes(t *testing.T) {
 			}
 			_ = responseBody(t, resp)
 			rs := waitRecords(t, h, 1)
-			if len(rs) != 1 || rs[0].model != tc.model || rs[0].kind != tc.kind || rs[0].httpStatus != tc.httpStatus || rs[0].status != tc.responseStatus || rs[0].outcome != tc.outcome || rs[0].reason != tc.reason || rs[0].input != tc.input || rs[0].total != tc.total {
+			if len(rs) != 1 || rs[0].model != tc.model || rs[0].httpStatus != tc.httpStatus || rs[0].status != tc.responseStatus || rs[0].outcome != tc.outcome || rs[0].reason != tc.reason || rs[0].input != tc.input || rs[0].total != tc.total {
 				t.Fatalf("record = %+v", rs)
 			}
 		})
@@ -457,10 +465,10 @@ func TestRetryExhaustionOtherStatusesAndRedirect(t *testing.T) {
 		t.Fatalf("accounting records = %d, want 4", len(rs))
 	}
 	wantRecords := map[int]storedRecord{
-		429: {user: "alice", kind: "create", httpStatus: 429, status: "failed", outcome: "failed"},
-		400: {user: "alice", kind: "create", httpStatus: 400, status: "failed", outcome: "failed"},
-		500: {user: "alice", kind: "create", httpStatus: 500, status: "failed", outcome: "failed"},
-		302: {user: "alice", kind: "create", httpStatus: 302, outcome: "incomplete", reason: "invalid_response"},
+		429: {user: "alice", httpStatus: 429, status: "failed", outcome: "failed"},
+		400: {user: "alice", httpStatus: 400, status: "failed", outcome: "failed"},
+		500: {user: "alice", httpStatus: 500, status: "failed", outcome: "failed"},
+		302: {user: "alice", httpStatus: 302, outcome: "incomplete", reason: "invalid_response"},
 	}
 	for _, row := range rs {
 		want, ok := wantRecords[row.httpStatus]
@@ -468,31 +476,6 @@ func TestRetryExhaustionOtherStatusesAndRedirect(t *testing.T) {
 			t.Fatalf("stored HTTP outcome = %+v; want %+v (known status=%v)", row, want, ok)
 		}
 		delete(wantRecords, row.httpStatus)
-	}
-}
-
-// A retrieval must retry a 429 and forward the successful response.
-// Those attempts must leave accounting empty, even if the response includes usage.
-func TestRetrievalRetries429WithoutAccounting(t *testing.T) {
-	var calls atomic.Int32
-	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) == 1 {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		_, _ = io.WriteString(w, `{"object":"response","status":"completed","usage":{"input_tokens":99,"total_tokens":99}}`)
-	})
-	h := newHarnessWithUpstream(t, "", upstream, nil)
-	resp := h.do(t, http.MethodGet, "/v1/responses/resp_synthetic?include=usage", "alice-test-key", "", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	_ = responseBody(t, resp)
-	if calls.Load() != 2 {
-		t.Fatalf("GET attempts = %d, want 2", calls.Load())
-	}
-	if rows := records(t, h.dbPath); len(rows) != 0 {
-		t.Fatalf("retrieval inserted accounting rows: %+v", rows)
 	}
 }
 
@@ -800,7 +783,7 @@ func TestSSEHeartbeatFlushesPromptly(t *testing.T) {
 	h := newHarnessWithUpstream(t, "", upstream, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, h.server.URL+"/v1/responses/resp_synthetic", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.server.URL+"/v1/responses", strings.NewReader(`{"stream":true}`))
 	req.Header.Set("Authorization", "Bearer alice-test-key")
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -849,7 +832,7 @@ func TestTLSVerificationAndCustomCA(t *testing.T) {
 	upstream.TLS = &tls.Config{Certificates: []tls.Certificate{*tlsCertificate(certFile, keyFile)}}
 	upstream.StartTLS()
 	defer upstream.Close()
-	base := "https://localhost:" + strings.Split(listener.Addr().String(), ":")[1] + "/v1"
+	base := "https://localhost:" + strings.Split(listener.Addr().String(), ":")[1] + "/v1/responses"
 	h := newHarnessWithUpstream(t, base, nil, nil)
 	resp := h.do(t, http.MethodPost, "/v1/responses", "alice-test-key", `{}`, nil)
 	if resp.StatusCode != http.StatusBadGateway {
@@ -873,7 +856,7 @@ func TestTLSVerificationAndCustomCA(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("trusted calls = %d", calls.Load())
 	}
-	h3 := newHarnessWithUpstream(t, "https://127.0.0.1:"+strings.Split(listener.Addr().String(), ":")[1]+"/v1", nil, func(cfg *config.Config) { cfg.Upstream.CAFile = caFile })
+	h3 := newHarnessWithUpstream(t, "https://127.0.0.1:"+strings.Split(listener.Addr().String(), ":")[1]+"/v1/responses", nil, func(cfg *config.Config) { cfg.Upstream.CAFile = caFile })
 	resp = h3.do(t, http.MethodPost, "/v1/responses", "alice-test-key", `{}`, nil)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("hostname mismatch status = %d", resp.StatusCode)
@@ -884,9 +867,8 @@ func TestTLSVerificationAndCustomCA(t *testing.T) {
 	}
 }
 
-// Queued JSON, invalid JSON, and unterminated SSE must each leave one incomplete, zero-usage row.
-// Restart and later client retrievals must preserve that row without automatic retrieval or recovery.
-func TestBackgroundRetrievalDoesNotRecoverAccounting(t *testing.T) {
+// Queued JSON, invalid JSON, and unterminated SSE leave incomplete rows, and retrieval routes stay rejected after restart.
+func TestBackgroundCreateRemainsUnrecoveredAndRetrievalRoutesAreRejected(t *testing.T) {
 	for _, tc := range []struct{ name, contentType, body, reason string }{
 		{"queued JSON", "application/json", `{"object":"response","status":"queued","model":"m","id":"resp_synthetic"}`, "nonterminal_response"},
 		{"unrelated JSON", "application/json", `{"ok":true}`, "invalid_response"},
@@ -897,11 +879,6 @@ func TestBackgroundRetrievalDoesNotRecoverAccounting(t *testing.T) {
 			upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet {
 					gets.Add(1)
-					if r.URL.Path == "/v1/responses/absent" {
-						w.WriteHeader(http.StatusNotFound)
-						_, _ = io.WriteString(w, `{"error":{"message":"synthetic missing response"}}`)
-						return
-					}
 					_, _ = io.WriteString(w, `{"object":"response","status":"completed","usage":{"input_tokens":99,"total_tokens":99}}`)
 					return
 				}
@@ -912,7 +889,7 @@ func TestBackgroundRetrievalDoesNotRecoverAccounting(t *testing.T) {
 			resp := h.do(t, http.MethodPost, "/v1/responses", "alice-test-key", `{"model":"m","background":true}`, nil)
 			_ = responseBody(t, resp)
 			rs := waitRecords(t, h, 1)
-			want := storedRecord{user: "alice", model: "m", kind: "create", httpStatus: 200, outcome: "incomplete", reason: tc.reason}
+			want := storedRecord{user: "alice", model: "m", httpStatus: 200, outcome: "incomplete", reason: tc.reason}
 			if tc.reason == "nonterminal_response" {
 				want.status = "queued"
 			}
@@ -934,7 +911,7 @@ func TestBackgroundRetrievalDoesNotRecoverAccounting(t *testing.T) {
 			}
 			h.store = reopened
 			ctx, cancel := context.WithCancel(context.Background())
-			cfg := config.Config{Upstream: config.Upstream{BaseURL: h.upstream.URL + "/v1", APIKey: "upstream-test-secret"}, Retry: config.Retry{MaxRetries: 2}, Timeouts: config.Timeouts{Shutdown: time.Second}, MaxRequestBodyBytes: 1 << 20}
+			cfg := config.Config{Upstream: config.Upstream{BaseURL: h.upstream.URL + "/v1/responses", APIKey: "upstream-test-secret"}, Retry: config.Retry{MaxRetries: 2}, Timeouts: config.Timeouts{Shutdown: time.Second}, MaxRequestBodyBytes: 1 << 20}
 			proxyServer, err := New(cfg, auth.NewUsers([]config.User{{Name: "alice", APIKeys: []string{"alice-test-key"}}, {Name: "bob", APIKeys: []string{"bob-test-key"}}}), reopened, h.logger, ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -958,15 +935,13 @@ func TestBackgroundRetrievalDoesNotRecoverAccounting(t *testing.T) {
 			}
 			for _, key := range []string{"alice-test-key", "bob-test-key"} {
 				resp = h.do(t, http.MethodGet, "/v1/responses/resp_synthetic", key, "", nil)
+				if resp.StatusCode != http.StatusNotFound {
+					t.Fatalf("retrieval status = %d, want 404", resp.StatusCode)
+				}
 				_ = responseBody(t, resp)
 			}
-			missing := h.do(t, http.MethodGet, "/v1/responses/absent", "alice-test-key", "", nil)
-			if missing.StatusCode != http.StatusNotFound {
-				t.Fatalf("missing retrieval status = %d", missing.StatusCode)
-			}
-			_ = responseBody(t, missing)
 			rs = waitRecords(t, h, 1)
-			if gets.Load() != 3 || len(rs) != 1 || rs[0] != beforeRetrieval {
+			if gets.Load() != 0 || len(rs) != 1 || rs[0] != beforeRetrieval {
 				t.Fatalf("gets=%d records=%+v", gets.Load(), rs)
 			}
 		})
@@ -1038,7 +1013,7 @@ func TestTransportErrorLogDoesNotExposeURLQuery(t *testing.T) {
 	}
 	addr := listener.Addr().String()
 	_ = listener.Close()
-	h := newHarnessWithUpstream(t, "http://"+addr+"/v1", nil, nil)
+	h := newHarnessWithUpstream(t, "http://"+addr+"/v1/responses", nil, nil)
 	resp := h.do(t, http.MethodPost, "/v1/responses?secret-query-marker", "alice-test-key", `{}`, nil)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d", resp.StatusCode)

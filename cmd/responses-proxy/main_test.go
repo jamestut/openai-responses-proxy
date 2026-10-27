@@ -62,7 +62,7 @@ func TestServeRejectsInvalidConfigurationAndUsersBeforeStarting(t *testing.T) {
 		t.Fatalf("invalid config created state directory: %v", err)
 	}
 
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("listen: %q\nupstream:\n  base_url: %q\n  api_key: mock-key\nusers_file: users.yaml\nstate_dir: state\n", listen, strings.TrimRight(upstream.URL, "/")+"/v1")), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("listen: %q\nupstream:\n  base_url: %q\n  api_key: mock-key\nusers_file: users.yaml\nstate_dir: state\n", listen, strings.TrimRight(upstream.URL, "/")+"/v1/responses")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(filepath.Dir(configPath), "users.yaml"), []byte("users:\n  - name: alice\n    api_keys: [duplicate]\n  - name: bob\n    api_keys: [duplicate]\n"), 0600); err != nil {
@@ -315,7 +315,7 @@ func TestServeDeadlineCancelsActiveUpstreamAndDoesNotReplayOrRetrieve(t *testing
 
 type canceledRecord struct {
 	count                                               int
-	username, model, kind                               string
+	username, model                                     string
 	httpStatus                                          int
 	responseStatus, outcome, incompleteReason           string
 	input, output, total, cached, cacheWrite, reasoning int64
@@ -328,7 +328,7 @@ func optionalCanceledRecord(t *testing.T, stateDir string) canceledRecord {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT username, model, kind, http_status, response_status, outcome,
+	rows, err := db.Query(`SELECT username, model, http_status, response_status, outcome,
 incomplete_reason, input_tokens, output_tokens, total_tokens, cached_tokens,
 cache_write_tokens, reasoning_tokens FROM accounting_requests`)
 	if err != nil {
@@ -341,7 +341,7 @@ cache_write_tokens, reasoning_tokens FROM accounting_requests`)
 		if record.count > 1 {
 			t.Fatal("deadline-canceled operation produced multiple rows")
 		}
-		if err := rows.Scan(&record.username, &record.model, &record.kind, &record.httpStatus,
+		if err := rows.Scan(&record.username, &record.model, &record.httpStatus,
 			&record.responseStatus, &record.outcome, &record.incompleteReason, &record.input,
 			&record.output, &record.total, &record.cached, &record.cacheWrite, &record.reasoning); err != nil {
 			t.Fatal(err)
@@ -354,7 +354,7 @@ cache_write_tokens, reasoning_tokens FROM accounting_requests`)
 		// Best-effort accounting may lose this operation when the shutdown deadline expires.
 		return record
 	}
-	if record.username != "alice" || record.model != "gpt-6-luna" || record.kind != "create" ||
+	if record.username != "alice" || record.model != "gpt-6-luna" ||
 		record.outcome != "incomplete" || record.incompleteReason != "client_disconnected" || record.httpStatus != 0 ||
 		record.responseStatus != "" || record.input != 0 || record.output != 0 || record.total != 0 ||
 		record.cached != 0 || record.cacheWrite != 0 || record.reasoning != 0 {
@@ -433,7 +433,7 @@ func writeConfig(t *testing.T, upstream, shutdown string, users ...string) (stri
 	root := t.TempDir()
 	configPath, stateDir := filepath.Join(root, "proxy.yaml"), filepath.Join(root, "state")
 	listen := reserveAddress(t)
-	contents := fmt.Sprintf("listen: %q\nupstream:\n  base_url: %q\n  api_key: mock-key\nusers_file: users.yaml\nstate_dir: state\nretry:\n  delay: 1ms\n  max_retries: 0\ntimeouts:\n  connect: 1s\n  tls_handshake: 1s\n  response_header: 0s\n  total_request: 0s\n  shutdown: %s\nlogging:\n  level: debug\n  destination: stdout\n", listen, strings.TrimRight(upstream, "/")+"/v1", shutdown)
+	contents := fmt.Sprintf("listen: %q\nupstream:\n  base_url: %q\n  api_key: mock-key\nusers_file: users.yaml\nstate_dir: state\nretry:\n  delay: 1ms\n  max_retries: 0\ntimeouts:\n  connect: 1s\n  tls_handshake: 1s\n  response_header: 0s\n  total_request: 0s\n  shutdown: %s\nlogging:\n  level: debug\n  destination: stdout\n", listen, strings.TrimRight(upstream, "/")+"/v1/responses", shutdown)
 	if err := os.WriteFile(configPath, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}

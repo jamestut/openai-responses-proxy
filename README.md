@@ -1,6 +1,6 @@
 # OpenAI Responses Proxy
 
-OpenAI Responses Proxy authenticates local users, forwards OpenAI Responses API requests to one configured upstream, retries upstream `429` responses, and records token usage in SQLite. It supports the Responses API over HTTP. It does **not** implement other OpenAI APIs, HTTPS on its listener, or WebSockets.
+OpenAI Responses Proxy authenticates local users, forwards Responses API create requests to one configured upstream, retries upstream `429` responses, and records token usage in SQLite. It supports `POST /v1/responses` and `GET /accounting` over HTTP. It does **not** implement other OpenAI APIs, HTTPS on its listener, or WebSockets.
 
 ## Configure
 
@@ -12,7 +12,7 @@ cp examples/users.example.yaml /path/to/users.yaml
 chmod 600 /path/to/proxy.yaml /path/to/users.yaml
 ```
 
-The proxy configuration requires `upstream.base_url`, `upstream.api_key`, and `users_file`. The configured credential is sent upstream as a Bearer token. Upstream TLS certificate and hostname checks stay enabled. Set `upstream.ca_file` to trust a private CA when needed.
+The proxy configuration requires `upstream.base_url`, `upstream.api_key`, and `users_file`. Set `upstream.base_url` to the complete upstream Responses endpoint, such as `https://api.openai.com/v1/responses`. A trailing slash is removed. The configured credential is sent upstream as a Bearer token. Upstream TLS certificate and hostname checks stay enabled. Set `upstream.ca_file` to trust a private CA when needed.
 
 The users file maps each username to one or more `api_keys`. A client presents one of these keys as `Authorization: Bearer ...`; the proxy records the username and replaces that credential with the upstream key. Each key must be unique, and every user must have at least one key.
 
@@ -38,7 +38,7 @@ The command asks the running process to read and validate the complete users fil
 
 ## Send a first request
 
-Point a Responses API client at `http://127.0.0.1:8080/v1` and use a key from the users file. Replace the example key in this request with your configured key:
+Send `POST /v1/responses` to the proxy and use a key from the users file. Replace the example key in this request with your configured key:
 
 ```sh
 curl http://127.0.0.1:8080/v1/responses \
@@ -47,7 +47,7 @@ curl http://127.0.0.1:8080/v1/responses \
   -d '{"model":"gpt-6-luna","input":"Say hello."}'
 ```
 
-The proxy forwards Responses API create, retrieve, delete, cancel, input-item listing, compact, and input-token counting routes. It forwards request fields and streaming responses; model availability is determined by the upstream.
+The proxy forwards only `POST /v1/responses` to the configured upstream endpoint. It preserves the incoming query and request body and forwards streaming responses; model availability is determined by the upstream. Other API routes are unsupported.
 
 Only upstream `429` responses are retried. `retry.max_retries` counts attempts after the first, and the configured delay gets independent plus-or-minus 20 percent jitter. Other upstream HTTP errors are returned as received. A downstream disconnect cancels work in progress.
 
@@ -76,7 +76,9 @@ The [Python query client](scripts/query_accounting.py) can print these summaries
 
 ## Accounting and operations
 
-The proxy attempts one accounting insert when a response create or compact operation ends. It records request start time in UTC, username, model, kind, outcome, upstream HTTP status, Response status, incomplete reason, and standard Responses token usage. Missing usage counts as zero. Retrieval and other utility routes do not create or update records; a `429` retry sequence still results in one accounting attempt.
+The proxy attempts one accounting insert when a response create operation ends. It records request start time in UTC, username, model, outcome, upstream HTTP status, Response status, incomplete reason, and standard Responses token usage. Missing usage counts as zero. A `429` retry sequence still results in one accounting attempt.
+
+The project is evolving rapidly, so backward compatibility across versions are never guaranteed. A changed accounting schema requires a fresh database; schema migrations are not provided.
 
 Accounting is best effort. Failed inserts are logged and discarded without retrying writes or preventing future requests. An in-flight request has no row yet. Streaming usage is taken only from a complete terminal event; missing usage counts as zero. Background responses without usage are recorded with zero tokens, and later retrieval does not update the record. Abrupt exit, a failed insert, or expiry of the configured shutdown deadline can leave a record missing. There is no replay or recovery.
 
@@ -84,7 +86,7 @@ Accounting is best effort. Failed inserts are logged and discarded without retry
 
 The default `upstream_errors` log level includes upstream HTTP and transport errors, retry events, and service/accounting errors, while omitting downstream authentication failures. Logs exclude credentials and request or response bodies. A file log destination is resolved relative to the main config file.
 
-The service drains handlers up to `timeouts.shutdown` during shutdown. If the deadline expires, active work is stopped. Use a fresh database for this version; older schemas are unsupported and are not migrated.
+The service drains handlers up to `timeouts.shutdown` during shutdown. If the deadline expires, active work is stopped.
 
 ## Build from source
 

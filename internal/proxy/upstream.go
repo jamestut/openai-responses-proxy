@@ -12,33 +12,23 @@ import (
 	"time"
 )
 
-// targetURL preserves the configured upstream prefix and the caller's query and escaped path.
+// targetURL forwards the caller's query to the configured endpoint.
 func (s *Server) targetURL(incoming *url.URL) *url.URL {
 	target := *s.baseURL
-	pathPrefix := strings.TrimRight(s.baseURL.Path, "/")
-	escapedPrefix := strings.TrimRight(s.baseURL.EscapedPath(), "/")
-	suffix := strings.TrimPrefix(incoming.Path, "/v1")
-	escapedSuffix := strings.TrimPrefix(incoming.EscapedPath(), "/v1")
-	target.Path = pathPrefix + suffix
-	target.RawPath = escapedPrefix + escapedSuffix
-	if target.RawPath == target.Path {
-		target.RawPath = ""
-	}
 	target.RawQuery = incoming.RawQuery
 	target.ForceQuery = incoming.ForceQuery
-	target.Fragment = ""
 	return &target
 }
 
 // doWithRetries retries only 429s.
-func (s *Server) doWithRetries(ctx context.Context, method string, target *url.URL, headers http.Header, body []byte) (*http.Response, error) {
+func (s *Server) doWithRetries(ctx context.Context, target *url.URL, headers http.Header, body []byte) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
 		if body != nil {
 			// Each attempt gets a fresh reader so retries replay the same body from byte zero.
 			reader = bytes.NewReader(body)
 		}
-		request, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), reader)
 		if err != nil {
 			return nil, err
 		}

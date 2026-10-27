@@ -115,7 +115,7 @@ func TestSQLiteBusyWritesAreDiscardedAndLaterCreatesStillRecord(t *testing.T) {
 	// Different model labels make any replay of the two failed inserts visible.
 	got := waitRecords(t, h, 1)
 	want := storedRecord{
-		user: "alice", model: "recorded-after-unlock", kind: "create", httpStatus: 200,
+		user: "alice", model: "recorded-after-unlock", httpStatus: 200,
 		status: "completed", outcome: "completed", input: 2, output: 3, total: 5,
 	}
 	if len(got) != 1 || got[0] != want {

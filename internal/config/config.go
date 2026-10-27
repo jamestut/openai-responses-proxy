@@ -17,14 +17,14 @@ import (
 )
 
 type Config struct {
-	Listen              string      `yaml:"listen"`
-	Upstream            Upstream    `yaml:"upstream"`
-	UsersFile           string      `yaml:"users_file"`
-	StateDir            string      `yaml:"state_dir"`
-	Retry               Retry       `yaml:"retry"`
-	Timeouts            Timeouts    `yaml:"timeouts"`
-	Logging             Logging     `yaml:"logging"`
-	MaxRequestBodyBytes int64       `yaml:"max_request_body_bytes"`
+	Listen              string   `yaml:"listen"`
+	Upstream            Upstream `yaml:"upstream"`
+	UsersFile           string   `yaml:"users_file"`
+	StateDir            string   `yaml:"state_dir"`
+	Retry               Retry    `yaml:"retry"`
+	Timeouts            Timeouts `yaml:"timeouts"`
+	Logging             Logging  `yaml:"logging"`
+	MaxRequestBodyBytes int64    `yaml:"max_request_body_bytes"`
 }
 
 type Upstream struct {
@@ -243,7 +243,7 @@ func resolvePath(baseDir, value string) string {
 }
 
 func parseUpstreamURL(value string) (*url.URL, error) {
-	// Reject URL components that conflict with per-request route joining or could embed credentials.
+	// The incoming query is forwarded separately and credentials belong in the API key.
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("upstream.base_url must be an absolute HTTP(S) URL without credentials, query, or fragment")
@@ -251,8 +251,10 @@ func parseUpstreamURL(value string) (*url.URL, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, errors.New("upstream.base_url scheme must be http or https")
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/")
-	parsed.RawPath = ""
+	for strings.HasSuffix(parsed.EscapedPath(), "/") {
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+		parsed.RawPath = strings.TrimSuffix(parsed.RawPath, "/")
+	}
 	return parsed, nil
 }
 

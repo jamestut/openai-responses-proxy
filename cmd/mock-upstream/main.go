@@ -52,31 +52,20 @@ type requestRecord struct {
 	Canceled              bool      `json:"canceled,omitempty"`
 }
 
-type responseState struct {
-	Response   map[string]any
-	Polls      int
-	CompleteAt int
-	Canceled   bool
-}
-
 type mockServer struct {
 	mu             sync.Mutex
 	queues         map[string][]scriptedResponse
 	requests       []requestRecord
 	counts         map[string]int
-	responses      map[string]*responseState
 	nextID         int64
-	completeAt     int
 	expectedBearer string
 }
 
 // newMockServer starts with isolated control state and a predictable background completion delay.
 func newMockServer() *mockServer {
 	return &mockServer{
-		queues:     make(map[string][]scriptedResponse),
-		counts:     make(map[string]int),
-		responses:  make(map[string]*responseState),
-		completeAt: 2,
+		queues: make(map[string][]scriptedResponse),
+		counts: make(map[string]int),
 	}
 }
 
@@ -111,7 +100,6 @@ func main() {
 	adminMux.HandleFunc("/__control/queue", mock.controlQueue)
 	adminMux.HandleFunc("/__control/state", mock.controlState)
 	adminMux.HandleFunc("/__control/reset", mock.controlReset)
-	adminMux.HandleFunc("/__control/background", mock.controlBackground)
 
 	upstreamServer := &http.Server{Addr: *listen, Handler: upstreamMux, ReadHeaderTimeout: 5 * time.Second}
 	adminServer := &http.Server{Addr: *admin, Handler: adminMux, ReadHeaderTimeout: 5 * time.Second}
@@ -201,21 +189,17 @@ func (m *mockServer) serveUpstream(w http.ResponseWriter, r *http.Request) {
 	m.markStatus(requestIndex, status)
 }
 
-// serveDefault implements the small set of Responses routes used by the manual scenarios.
+// serveDefault implements POST /v1/responses for manual proxy scenarios.
 func (m *mockServer) serveDefault(w http.ResponseWriter, r *http.Request, requestBody []byte, requestIndex int) {
 	path := r.URL.Path
 	switch {
-	case r.Method == http.MethodPost && path == "/v1/responses/input_tokens":
-		writeJSON(w, http.StatusOK, map[string]any{"object": "response.input_tokens", "input_tokens": 12})
-		m.markStatus(requestIndex, http.StatusOK)
-	case r.Method == http.MethodPost && (path == "/v1/responses" || path == "/v1/responses/compact"):
+	case r.Method == http.MethodPost && path == "/v1/responses":
 		var request map[string]any
 		_ = json.Unmarshal(requestBody, &request)
 		// Allocate IDs under the mutex so parallel creates cannot collide.
 		m.mu.Lock()
 		m.nextID++
 		id := fmt.Sprintf("resp_mock_%06d", m.nextID)
-		completeAt := m.completeAt
 		m.mu.Unlock()
 		model, _ := request["model"].(string)
 		if model == "" {
@@ -230,61 +214,14 @@ func (m *mockServer) serveDefault(w http.ResponseWriter, r *http.Request, reques
 				"total_tokens": 16,
 			},
 		}
-		completeAfter := 1
-		if request["background"] == true && path == "/v1/responses" {
+		if request["background"] == true {
 			resp["status"] = "queued"
-			completeAfter = completeAt
 		}
-		// Keep the stored response mutable for simulated polling and cancellation.
-		m.mu.Lock()
-		m.responses[id] = &responseState{Response: resp, CompleteAt: completeAfter}
-		m.mu.Unlock()
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || request["stream"] == true {
 			m.serveSSE(w, r, http.StatusOK, []scriptedEvent{{Data: jsonValue(map[string]any{"type": "response.completed", "response": resp})}}, requestIndex)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
-		m.markStatus(requestIndex, http.StatusOK)
-	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/responses/") && !strings.HasSuffix(path, "/input_items"):
-		id := strings.TrimPrefix(path, "/v1/responses/")
-		status := http.StatusOK
-		m.mu.Lock()
-		state := m.responses[id]
-		if state != nil {
-			state.Polls++
-			// Poll completion is driven by the configured poll count; zero leaves the response pending.
-			if state.CompleteAt > 0 && state.Polls >= state.CompleteAt {
-				state.Response["status"] = "completed"
-			}
-			// Snapshot top-level fields before unlocking; nested payloads are never mutated afterward.
-			resp := cloneMap(state.Response)
-			m.mu.Unlock()
-			writeJSON(w, http.StatusOK, resp)
-		} else {
-			m.mu.Unlock()
-			status = http.StatusNotFound
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"message": "mock response not found"}})
-		}
-		m.markStatus(requestIndex, status)
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/responses/"):
-		id := strings.TrimPrefix(path, "/v1/responses/")
-		m.mu.Lock()
-		delete(m.responses, id)
-		m.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"id": id, "object": "response.deleted", "deleted": true})
-		m.markStatus(requestIndex, http.StatusOK)
-	case r.Method == http.MethodPost && strings.HasSuffix(path, "/cancel"):
-		id := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/responses/"), "/cancel")
-		m.mu.Lock()
-		if state := m.responses[id]; state != nil {
-			state.Canceled = true
-			state.Response["status"] = "cancelled"
-		}
-		m.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"id": id, "object": "response", "status": "cancelled"})
-		m.markStatus(requestIndex, http.StatusOK)
-	case r.Method == http.MethodGet && strings.HasSuffix(path, "/input_items"):
-		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": []any{}, "has_more": false})
 		m.markStatus(requestIndex, http.StatusOK)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"message": "mock route not found"}})
@@ -373,36 +310,12 @@ func (m *mockServer) controlReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.mu.Lock()
-	// Clear scenario data together; the ID counter and background threshold remain unchanged.
+	// Clear scripted scenarios and observed requests without resetting response IDs.
 	m.queues = make(map[string][]scriptedResponse)
 	m.requests = nil
 	m.counts = make(map[string]int)
-	m.responses = make(map[string]*responseState)
 	m.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"reset": true})
-}
-
-func (m *mockServer) controlBackground(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	var request struct {
-		CompleteAfterPolls int `json:"complete_after_polls"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&request); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if request.CompleteAfterPolls < 0 {
-		http.Error(w, "poll count must be nonnegative", http.StatusBadRequest)
-		return
-	}
-	// A zero threshold leaves newly created background responses pending on every poll.
-	m.mu.Lock()
-	m.completeAt = request.CompleteAfterPolls
-	m.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"complete_after_polls": request.CompleteAfterPolls})
 }
 
 func (m *mockServer) markStatus(index, status int) {
@@ -433,14 +346,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func jsonValue(value any) json.RawMessage {
 	encoded, _ := json.Marshal(value)
 	return encoded
-}
-
-func cloneMap(in map[string]any) map[string]any {
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }
 
 func generateTestPKI(dir string) error {

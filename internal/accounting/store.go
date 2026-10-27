@@ -63,7 +63,6 @@ func createSchema(db *sql.DB) error {
 	started_at_us INTEGER NOT NULL,
 	username TEXT NOT NULL,
 	model TEXT NOT NULL DEFAULT '',
-	kind TEXT NOT NULL CHECK (kind IN ('create', 'compact')),
 	http_status INTEGER NOT NULL,
 	response_status TEXT NOT NULL DEFAULT '',
 	outcome TEXT NOT NULL,
@@ -100,9 +99,6 @@ func (s *Store) Record(ctx context.Context, meta RequestMeta, result Result) err
 	if meta.User == "" {
 		return fmt.Errorf("accounting user is required")
 	}
-	if meta.Kind != KindCreate && meta.Kind != KindCompact {
-		return fmt.Errorf("unsupported accounting operation %q", meta.Kind)
-	}
 	if meta.StartedAt.IsZero() {
 		meta.StartedAt = time.Now()
 	}
@@ -113,11 +109,11 @@ func (s *Store) Record(ctx context.Context, meta RequestMeta, result Result) err
 	u := result.Usage
 	// A completed operation gets one best-effort insert; failures are returned to the caller.
 	_, err := s.db.ExecContext(ctx, `INSERT INTO accounting_requests (
-	started_at_us, username, model, kind, http_status, response_status, outcome,
+	started_at_us, username, model, http_status, response_status, outcome,
 	input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens,
 	reasoning_tokens, incomplete_reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		meta.StartedAt.UTC().UnixMicro(), meta.User, model, string(meta.Kind),
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		meta.StartedAt.UTC().UnixMicro(), meta.User, model,
 		result.HTTPStatus, result.Status, result.Outcome,
 		u.InputTokens, u.OutputTokens, u.TotalTokens, u.CachedTokens,
 		u.CacheWriteTokens, u.ReasoningTokens, string(result.IncompleteReason))
@@ -224,4 +220,3 @@ cached_tokens, cache_write_tokens, reasoning_tokens FROM accounting_requests WHE
 	}
 	return Report{Groups: result}, nil
 }
-

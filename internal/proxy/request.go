@@ -14,18 +14,15 @@ import (
 )
 
 // serveUpstream handles one accepted route while keeping retries on the same request bytes.
-func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user string, kind accounting.Kind) {
+func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user string) {
 	if r.Body != nil {
 		defer r.Body.Close()
 	}
 	startedAt := time.Now().UTC()
-	isAccounted := kind == accounting.KindCreate || kind == accounting.KindCompact
-	meta := accounting.RequestMeta{StartedAt: startedAt, User: user, Kind: kind}
+	meta := accounting.RequestMeta{StartedAt: startedAt, User: user}
 	result := accounting.Result{Outcome: "incomplete", IncompleteReason: accounting.ReasonInvalidResponse}
-	if isAccounted {
-		// The result is inserted once on exit, even if the client disconnects.
-		defer func() { s.record(meta, result) }()
-	}
+	// The result is inserted once on exit, even if the client disconnects.
+	defer func() { s.record(meta, result) }()
 
 	body, err := readRequestBody(r, s.config.MaxRequestBodyBytes)
 	if err != nil {
@@ -43,14 +40,12 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user stri
 		}
 		return
 	}
-	if isAccounted {
-		meta.Model = requestModel(body)
-	}
+	meta.Model = requestModel(body)
 
 	requestContext, cancel := responseContext(r.Context(), s.config.Timeouts.TotalRequest)
 	defer cancel()
 	target := s.targetURL(r.URL)
-	response, roundTripErr := s.doWithRetries(requestContext, r.Method, target, r.Header, body)
+	response, roundTripErr := s.doWithRetries(requestContext, target, r.Header, body)
 	if roundTripErr != nil {
 		result = accounting.Result{Outcome: "incomplete", IncompleteReason: accounting.ReasonTransportError}
 		if response != nil {
@@ -82,29 +77,27 @@ func (s *Server) serveUpstream(w http.ResponseWriter, r *http.Request, user stri
 		s.logger.UpstreamError("upstream returned an HTTP error",
 			"status", response.StatusCode,
 			"method", r.Method,
-			"path", sanitizedUpstreamPath(r.URL.Path),
+			"path", r.URL.Path,
 			"category", upstreamHTTPErrorCategory(response.StatusCode))
 	}
 
 	if strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		result = s.serveSSE(w, r.Context(), response, isAccounted)
+		result = s.serveSSE(w, r.Context(), response)
 		result.HTTPStatus = response.StatusCode
 		return
 	}
 	responseBody, readErr := io.ReadAll(response.Body)
-	if isAccounted {
-		info := parseResponse(responseBody)
-		if response.StatusCode >= 400 && info.Status == "" {
-			info.Status = "failed"
-		}
-		result = responseResult(info, response.StatusCode)
-		if r.Context().Err() != nil {
-			result.Outcome = "incomplete"
-			result.IncompleteReason = accounting.ReasonClientDisconnected
-		} else if readErr != nil {
-			result.Outcome = "incomplete"
-			result.IncompleteReason = accounting.ReasonResponseReadError
-		}
+	info := parseResponse(responseBody)
+	if response.StatusCode >= 400 && info.Status == "" {
+		info.Status = "failed"
+	}
+	result = responseResult(info, response.StatusCode)
+	if r.Context().Err() != nil {
+		result.Outcome = "incomplete"
+		result.IncompleteReason = accounting.ReasonClientDisconnected
+	} else if readErr != nil {
+		result.Outcome = "incomplete"
+		result.IncompleteReason = accounting.ReasonResponseReadError
 	}
 	copyResponseHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
@@ -128,9 +121,6 @@ func responseResult(info responseInfo, httpStatus int) accounting.Result {
 	if httpStatus >= 400 || info.Status == "failed" {
 		result.Outcome = "failed"
 		result.IncompleteReason = accounting.ReasonNone
-	} else if info.Compact {
-		result.Outcome = "completed"
-		result.IncompleteReason = accounting.ReasonNone
 	} else if isTerminalStatus(info.Status) {
 		result.Outcome = info.Status
 		result.IncompleteReason = accounting.ReasonNone
@@ -149,28 +139,6 @@ func upstreamHTTPErrorCategory(status int) string {
 	default:
 		return "http_error"
 	}
-}
-
-// sanitizedUpstreamPath removes response IDs before route metadata reaches logs.
-func sanitizedUpstreamPath(path string) string {
-	switch path {
-	case "/v1/responses", "/v1/responses/compact", "/v1/responses/input_tokens":
-		return path
-	}
-	if !strings.HasPrefix(path, "/v1/responses/") {
-		return path
-	}
-	parts := strings.Split(strings.TrimPrefix(path, "/v1/responses/"), "/")
-	if len(parts) == 1 && parts[0] != "" {
-		return "/v1/responses/{response_id}"
-	}
-	if len(parts) == 2 && parts[0] != "" {
-		switch parts[1] {
-		case "cancel", "input_items":
-			return "/v1/responses/{response_id}/" + parts[1]
-		}
-	}
-	return "/v1/responses/{response_id}"
 }
 
 var errRequestTooLarge = errors.New("request body exceeds configured limit")

@@ -1,6 +1,7 @@
 listen: 127.0.0.1:8080
 upstream:
-  base_url: https://api.openai.com/v1
+  # Complete Responses endpoint; any trailing slash is removed.
+  base_url: https://api.openai.com/v1/responses
   api_key: replace-with-your-upstream-api-key
   # Optional private CA bundle; upstream certificates are always verified.
   # ca_file: ./upstream-ca.pem

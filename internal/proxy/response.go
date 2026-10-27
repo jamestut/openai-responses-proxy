@@ -8,11 +8,10 @@ import (
 )
 
 type responseInfo struct {
-	Model   string
-	Status  string
-	Usage   accounting.Usage
-	Compact bool
-	Valid   bool
+	Model  string
+	Status string
+	Usage  accounting.Usage
+	Valid  bool
 }
 
 // parseResponse accepts either a Response object or an event envelope containing response.
@@ -39,11 +38,10 @@ func parseResponse(body []byte) responseInfo {
 	}
 	usage := accounting.ParseUsageObject(object.Usage)
 	return responseInfo{
-		Model:   object.Model,
-		Status:  strings.ToLower(object.Status),
-		Usage:   usage,
-		Compact: object.Object == "response.compaction",
-		Valid:   object.Status != "" || object.Object == "response" || object.Object == "response.compaction",
+		Model:  object.Model,
+		Status: strings.ToLower(object.Status),
+		Usage:  usage,
+		Valid:  object.Status != "" || object.Object == "response",
 	}
 }
 

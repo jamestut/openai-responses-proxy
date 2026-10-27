@@ -6,14 +6,6 @@ import (
 	"time"
 )
 
-// Kind identifies a create or compact operation.
-type Kind string
-
-const (
-	KindCreate  Kind = "create"
-	KindCompact Kind = "compact"
-)
-
 // Usage contains only standard Responses token counters; detail counters are not
 // added to TotalTokens because the upstream total already includes them.
 type Usage struct {
@@ -30,7 +22,6 @@ type RequestMeta struct {
 	StartedAt time.Time
 	User      string
 	Model     string
-	Kind      Kind
 }
 
 // IncompleteReason values are constrained to the same enum in the SQLite schema.

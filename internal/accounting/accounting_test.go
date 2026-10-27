@@ -35,7 +35,6 @@ func recordTestRow(t *testing.T, store *Store, startedAt time.Time, user, model 
 		StartedAt: startedAt,
 		User:      user,
 		Model:     model,
-		Kind:      KindCreate,
 	}, Result{Usage: usage, Outcome: "completed", HTTPStatus: 200, Status: "completed"})
 	if err != nil {
 		t.Fatal(err)
@@ -78,15 +77,15 @@ func TestOpenUsesPrivateOnDiskDatabaseAndSchema(t *testing.T) {
 	if err := rows.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"started_at_us", "username", "model", "kind", "http_status", "response_status", "outcome", "input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_write_tokens", "reasoning_tokens", "incomplete_reason"} {
+	for _, name := range []string{"started_at_us", "username", "model", "http_status", "response_status", "outcome", "input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_write_tokens", "reasoning_tokens", "incomplete_reason"} {
 		if !columns[name] {
 			t.Errorf("schema missing column %q", name)
 		}
 	}
-	if len(columns) != 14 {
-		t.Errorf("schema has %d columns, want exactly 14", len(columns))
+	if len(columns) != 13 {
+		t.Errorf("schema has %d columns, want exactly 13", len(columns))
 	}
-	for _, removed := range []string{"response_id", "pending", "usage_known"} {
+	for _, removed := range []string{"kind", "response_id", "pending", "usage_known"} {
 		if columns[removed] {
 			t.Errorf("schema has removed column %q", removed)
 		}
@@ -131,24 +130,24 @@ func TestOpenUsesPrivateOnDiskDatabaseAndSchema(t *testing.T) {
 	}
 }
 
-// A compact record must preserve attribution and the UTC instant, using the response model when needed.
-// A missing user or unsupported operation kind must be rejected.
+// A record must preserve attribution and the UTC instant, using the response model when needed.
+// A missing user must be rejected.
 func TestRecordValidatesInputsAndStoresUTCAttribution(t *testing.T) {
 	store, _ := openTestStore(t)
 	started := time.Date(2026, 10, 4, 8, 12, 13, 123456000, time.FixedZone("offset", 7*60*60))
-	if err := store.Record(context.Background(), RequestMeta{StartedAt: started, User: "alice", Kind: KindCompact}, Result{
+	if err := store.Record(context.Background(), RequestMeta{StartedAt: started, User: "alice"}, Result{
 		ResponseModel: "response-model", Outcome: "completed", HTTPStatus: 200, Status: "completed",
 		Usage: Usage{InputTokens: 12, OutputTokens: 4, TotalTokens: 16, CachedTokens: 2, CacheWriteTokens: 1, ReasoningTokens: 1},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var gotAt int64
-	var user, model, kind, outcome, status string
+	var user, model, outcome, status string
 	var httpStatus int
 	var input, output, total, cached, cacheWrite, reasoning int64
-	err := store.db.QueryRow(`SELECT started_at_us, username, model, kind, outcome, http_status, response_status,
+	err := store.db.QueryRow(`SELECT started_at_us, username, model, outcome, http_status, response_status,
 input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens FROM accounting_requests`).Scan(
-		&gotAt, &user, &model, &kind, &outcome, &httpStatus, &status,
+		&gotAt, &user, &model, &outcome, &httpStatus, &status,
 		&input, &output, &total, &cached, &cacheWrite, &reasoning)
 	if err != nil {
 		t.Fatal(err)
@@ -156,42 +155,34 @@ input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, re
 	if want := started.UTC().UnixMicro(); gotAt != want {
 		t.Errorf("started_at_us = %d, want UTC instant %d", gotAt, want)
 	}
-	if user != "alice" || model != "response-model" || kind != "compact" || outcome != "completed" || status != "completed" || httpStatus != 200 {
-		t.Errorf("stored metadata = %q %q %q %q %d %q", user, model, kind, outcome, httpStatus, status)
+	if user != "alice" || model != "response-model" || outcome != "completed" || status != "completed" || httpStatus != 200 {
+		t.Errorf("stored metadata = %q %q %q %d %q", user, model, outcome, httpStatus, status)
 	}
 	if got := []int64{input, output, total, cached, cacheWrite, reasoning}; !reflect.DeepEqual(got, []int64{12, 4, 16, 2, 1, 1}) {
 		t.Errorf("stored usage = %v", got)
 	}
 
-	for name, meta := range map[string]RequestMeta{
-		"missing_user": {Kind: KindCreate},
-		"invalid_kind": {User: "alice", Kind: "retrieve"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := store.Record(context.Background(), meta, Result{}); err == nil {
-				t.Fatal("Record succeeded for invalid metadata")
-			}
-		})
+	if err := store.Record(context.Background(), RequestMeta{}, Result{}); err == nil {
+		t.Fatal("Record succeeded without a user")
 	}
 }
 
-// SQLite should accept only the documented incomplete reasons and nonnegative counters for supported operation kinds.
+// SQLite should accept only the documented incomplete reasons and nonnegative counters.
 func TestIncompleteReasonAndCounterConstraints(t *testing.T) {
 	store, _ := openTestStore(t)
 	allowed := []string{"", "transport_error", "response_read_error", "client_disconnected", "stream_ended", "nonterminal_response", "invalid_response"}
 	for _, reason := range allowed {
 		_, err := store.db.Exec(`INSERT INTO accounting_requests (
-started_at_us, username, model, kind, http_status, response_status, outcome,
+started_at_us, username, model, http_status, response_status, outcome,
 input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason
-) VALUES (0, 'alice', '', 'create', 0, '', 'incomplete', 0, 0, 0, 0, 0, 0, ?)`, reason)
+) VALUES (0, 'alice', '', 0, '', 'incomplete', 0, 0, 0, 0, 0, 0, ?)`, reason)
 		if err != nil {
 			t.Errorf("allowed reason %q rejected: %v", reason, err)
 		}
 	}
 	for name, statement := range map[string]string{
-		"arbitrary_reason": `INSERT INTO accounting_requests (started_at_us, username, kind, http_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason) VALUES (0, 'alice', 'create', 0, 'incomplete', 0, 0, 0, 0, 0, 0, 'arbitrary_reason')`,
-		"invalid_kind":     `INSERT INTO accounting_requests (started_at_us, username, kind, http_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason) VALUES (0, 'alice', 'retrieve', 0, 'incomplete', 0, 0, 0, 0, 0, 0, '')`,
-		"negative_counter": `INSERT INTO accounting_requests (started_at_us, username, kind, http_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason) VALUES (0, 'alice', 'create', 0, 'incomplete', -1, 0, 0, 0, 0, 0, '')`,
+		"arbitrary_reason": `INSERT INTO accounting_requests (started_at_us, username, http_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason) VALUES (0, 'alice', 0, 'incomplete', 0, 0, 0, 0, 0, 0, 'arbitrary_reason')`,
+		"negative_counter": `INSERT INTO accounting_requests (started_at_us, username, http_status, outcome, input_tokens, output_tokens, total_tokens, cached_tokens, cache_write_tokens, reasoning_tokens, incomplete_reason) VALUES (0, 'alice', 0, 'incomplete', -1, 0, 0, 0, 0, 0, '')`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := store.db.Exec(statement); err == nil {

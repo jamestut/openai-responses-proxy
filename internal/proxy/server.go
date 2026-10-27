@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -125,12 +124,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request, user string) 
 		s.serveAccounting(w, r)
 		return
 	}
-	kind, ok := classifyRoute(r.Method, r.URL.Path)
-	if !ok {
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
 		writeAPIError(w, http.StatusNotFound, "unsupported route", "invalid_request_error")
 		return
 	}
-	s.serveUpstream(w, r, user, kind)
+	s.serveUpstream(w, r, user)
 }
 
 func (s *Server) serveAccounting(w http.ResponseWriter, r *http.Request) {
@@ -155,37 +153,6 @@ func (s *Server) serveAccounting(w http.ResponseWriter, r *http.Request) {
 	if err := jsonEncode(w, report); err != nil {
 		s.logger.Error("write accounting query response", "error", err.Error())
 	}
-}
-
-func classifyRoute(method, path string) (accounting.Kind, bool) {
-	// Keep the accepted surface explicit so unrelated API routes cannot pass through.
-	// Only create and compact return an accounting kind; utility and retrieval routes stay unaccounted.
-	switch path {
-	case "/v1/responses":
-		if method == http.MethodPost {
-			return accounting.KindCreate, true
-		}
-		return "", false
-	case "/v1/responses/compact":
-		if method == http.MethodPost {
-			return accounting.KindCompact, true
-		}
-		return "", false
-	case "/v1/responses/input_tokens":
-		return "", method == http.MethodPost
-	}
-	if !strings.HasPrefix(path, "/v1/responses/") {
-		return "", false
-	}
-	parts := strings.Split(strings.TrimPrefix(path, "/v1/responses/"), "/")
-	if len(parts) == 1 && parts[0] != "" && (method == http.MethodGet || method == http.MethodDelete) {
-		return "", true
-	}
-	if len(parts) == 2 && parts[0] != "" &&
-		((parts[1] == "cancel" && method == http.MethodPost) || (parts[1] == "input_items" && method == http.MethodGet)) {
-		return "", true
-	}
-	return "", false
 }
 
 func (s *Server) Close() {

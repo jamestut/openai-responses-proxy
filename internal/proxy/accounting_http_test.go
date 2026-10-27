@@ -28,7 +28,7 @@ func TestAccountingHTTPGlobalGroupsAndExactFilters(t *testing.T) {
 		{"alice", "model-b", accounting.Usage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7, ReasoningTokens: 1}},
 	} {
 		if err := h.store.Record(context.Background(), accounting.RequestMeta{
-			StartedAt: time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC), User: row.user, Model: row.model, Kind: accounting.KindCreate,
+			StartedAt: time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC), User: row.user, Model: row.model,
 		}, accounting.Result{HTTPStatus: 200, Status: "completed", Outcome: "completed", Usage: row.usage}); err != nil {
 			t.Fatal(err)
 		}

@@ -28,12 +28,12 @@ func TestHTTPErrorAndRetryLogsContainOnlySanitizedMetadata(t *testing.T) {
 		}
 	})
 	h := newHarnessWithUpstream(t, "", upstream, nil)
-	unauthorized := h.do(t, http.MethodGet, "/v1/responses", "unknown-test-key", "", nil)
+	unauthorized := h.do(t, http.MethodPost, "/v1/responses", "unknown-test-key", `{}`, nil)
 	unauthorized.Body.Close()
 	if unauthorized.StatusCode != http.StatusUnauthorized {
 		t.Errorf("unknown key status = %d, want 401", unauthorized.StatusCode)
 	}
-	errorResponse := h.do(t, http.MethodGet, "/v1/responses/path-id-marker?query-marker=true", "alice-test-key", "", nil)
+	errorResponse := h.do(t, http.MethodPost, "/v1/responses?query-marker=true", "alice-test-key", `{"model":"m","input":"request-body-marker"}`, nil)
 	_ = responseBody(t, errorResponse)
 	if errorResponse.StatusCode != http.StatusInternalServerError {
 		t.Errorf("upstream error status = %d, want 500", errorResponse.StatusCode)
@@ -49,7 +49,7 @@ func TestHTTPErrorAndRetryLogsContainOnlySanitizedMetadata(t *testing.T) {
 	}
 	// Distinct markers reveal leaks from credentials, resource IDs, queries, or bodies.
 	for _, marker := range []string{
-		"alice-test-key", "unknown-test-key", "upstream-test-secret", "path-id-marker", "query-marker", "request-body-marker", "response-body-marker",
+		"alice-test-key", "unknown-test-key", "upstream-test-secret", "query-marker", "request-body-marker", "response-body-marker",
 	} {
 		if strings.Contains(string(logs), marker) {
 			t.Error("log contains a forbidden synthetic credential, identifier, query, or body marker")
@@ -66,7 +66,7 @@ func TestHTTPErrorAndRetryLogsContainOnlySanitizedMetadata(t *testing.T) {
 		switch entry["msg"] {
 		case "upstream returned an HTTP error":
 			foundHTTPError = true
-			if entry["status"] != float64(500) || entry["method"] != "GET" || entry["path"] != "/v1/responses/{response_id}" || entry["category"] != "server_error" {
+			if entry["status"] != float64(500) || entry["method"] != "POST" || entry["path"] != "/v1/responses" || entry["category"] != "server_error" {
 				t.Error("HTTP error log lacks the expected sanitized status, method, route, or category")
 			}
 		case "upstream returned 429; retrying":

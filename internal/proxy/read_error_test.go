@@ -47,7 +47,7 @@ func TestUpstreamTruncatedBodiesPreserveHTTPStatusAndRecordReadError(t *testing.
 			// The read error changes the outcome, even when JSON says "completed".
 			got := waitRecords(t, h, 1)
 			want := storedRecord{
-				user: "alice", model: "request-model", kind: "create", httpStatus: 200,
+				user: "alice", model: "request-model", httpStatus: 200,
 				status: tc.status, outcome: "incomplete", reason: "response_read_error",
 			}
 			if len(got) != 1 || got[0] != want {

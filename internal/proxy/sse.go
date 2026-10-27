@@ -12,7 +12,7 @@ import (
 )
 
 // serveSSE forwards raw event frames while accounting only complete terminal events.
-func (s *Server) serveSSE(w http.ResponseWriter, requestContext context.Context, response *http.Response, isAccounted bool) accounting.Result {
+func (s *Server) serveSSE(w http.ResponseWriter, requestContext context.Context, response *http.Response) accounting.Result {
 	copyResponseHeaders(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
 	flusher, canFlush := w.(http.Flusher)
@@ -49,7 +49,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, requestContext context.Context,
 				event = append(event, line...)
 				// Only an empty line dispatches an event; spaces are SSE field content.
 				if text == "" {
-					if isAccounted && !terminal {
+					if !terminal {
 						if info, ok := parseSSEEvent(eventName, dataLines); ok {
 							if isTerminalStatus(info.Status) {
 								result = responseResult(info, response.StatusCode)
@@ -104,7 +104,7 @@ func (s *Server) serveSSE(w http.ResponseWriter, requestContext context.Context,
 	if requestContext.Err() != nil {
 		clientDisconnected = true
 	}
-	if isAccounted && !terminal && response.StatusCode < 400 {
+	if !terminal && response.StatusCode < 400 {
 		if clientDisconnected {
 			result.IncompleteReason = accounting.ReasonClientDisconnected
 		} else if streamErr != nil && !errors.Is(streamErr, io.EOF) {
