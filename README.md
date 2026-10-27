@@ -12,7 +12,7 @@ cp examples/users.example.yaml /path/to/users.yaml
 chmod 600 /path/to/proxy.yaml /path/to/users.yaml
 ```
 
-The proxy configuration requires `upstream.base_url`, `upstream.api_key`, and `users_file`. The upstream URL must be an absolute HTTP(S) URL ending in `/v1`; the configured credential is sent upstream as a Bearer token. Upstream TLS certificate and hostname checks stay enabled. Set `upstream.ca_file` to trust a private CA when needed.
+The proxy configuration requires `upstream.base_url`, `upstream.api_key`, and `users_file`. The configured credential is sent upstream as a Bearer token. Upstream TLS certificate and hostname checks stay enabled. Set `upstream.ca_file` to trust a private CA when needed.
 
 The users file maps each username to one or more `api_keys`. A client presents one of these keys as `Authorization: Bearer ...`; the proxy records the username and replaces that credential with the upstream key. Each key must be unique, and every user must have at least one key.
 

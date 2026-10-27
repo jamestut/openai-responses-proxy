@@ -251,12 +251,7 @@ func parseUpstreamURL(value string) (*url.URL, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, errors.New("upstream.base_url scheme must be http or https")
 	}
-	// Keep any upstream path prefix while normalizing only trailing slashes around the required /v1 suffix.
-	cleanPath := strings.TrimRight(parsed.Path, "/")
-	if cleanPath != "/v1" && !strings.HasSuffix(cleanPath, "/v1") {
-		return nil, errors.New("upstream.base_url path must end in /v1")
-	}
-	parsed.Path = cleanPath
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	parsed.RawPath = ""
 	return parsed, nil
 }

@@ -33,7 +33,7 @@ func TestLoadDefaultsAndResolvesRelativePathsFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := `upstream:
-  base_url: http://upstream.example/proxy/v1/
+  base_url: http://upstream.example/proxy/
   api_key: mock-upstream-key
   ca_file: ./ca.pem
 users_file: ./users.yaml
@@ -45,7 +45,7 @@ logging:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Listen != "127.0.0.1:8080" || cfg.Upstream.BaseURL != "http://upstream.example/proxy/v1" || cfg.Upstream.APIKey != "mock-upstream-key" {
+	if cfg.Listen != "127.0.0.1:8080" || cfg.Upstream.BaseURL != "http://upstream.example/proxy" || cfg.Upstream.APIKey != "mock-upstream-key" {
 		t.Errorf("unexpected listen/upstream defaults: listen=%q base_url=%q api_key_present=%t", cfg.Listen, cfg.Upstream.BaseURL, cfg.Upstream.APIKey != "")
 	}
 	if cfg.UsersFile != filepath.Join(dir, "users.yaml") || cfg.StateDir != filepath.Join(dir, "private-state") || cfg.Upstream.CAFile != caPath || cfg.Logging.Destination != filepath.Join(dir, "proxy.log") {
@@ -134,7 +134,6 @@ func TestLoadRejectsInvalidMainConfiguration(t *testing.T) {
 		{"negative_retries", "", "retry:\n  max_retries: -1\n"},
 		{"zero_body_limit", "", "max_request_body_bytes: 0\n"},
 		{"invalid_upstream_scheme", "http://upstream.example/proxy/v1", "ftp://upstream.example/proxy/v1"},
-		{"upstream_missing_v1", "http://upstream.example/proxy/v1", "http://upstream.example/proxy"},
 		{"upstream_query", "http://upstream.example/proxy/v1", "http://upstream.example/proxy/v1?secret=value"},
 		{"upstream_credentials", "http://upstream.example/proxy/v1", "http://user:pass@upstream.example/proxy/v1"},
 		{"negative_retry_delay", "", "retry:\n  delay: -1s\n"},
