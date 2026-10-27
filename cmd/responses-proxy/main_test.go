@@ -21,6 +21,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 	"openai-responses-proxy/internal/accounting"
+	"openai-responses-proxy/internal/testutil"
 )
 
 const helperConfigEnv = "RESPONSES_PROXY_TEST_CONFIG"
@@ -430,7 +431,7 @@ func stopHelper(p *helperProcess) {
 
 func writeConfig(t *testing.T, upstream, shutdown string, users ...string) (string, string) {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.ShortTempDir(t)
 	configPath, stateDir := filepath.Join(root, "proxy.yaml"), filepath.Join(root, "state")
 	listen := reserveAddress(t)
 	contents := fmt.Sprintf("listen: %q\nupstream:\n  base_url: %q\n  api_key: mock-key\nusers_file: users.yaml\nstate_dir: state\nretry:\n  delay: 1ms\n  max_retries: 0\ntimeouts:\n  connect: 1s\n  tls_handshake: 1s\n  response_header: 0s\n  total_request: 0s\n  shutdown: %s\nlogging:\n  level: debug\n  destination: stdout\n", listen, strings.TrimRight(upstream, "/")+"/v1/responses", shutdown)

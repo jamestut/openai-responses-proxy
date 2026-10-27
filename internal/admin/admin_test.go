@@ -15,18 +15,20 @@ import (
 	"openai-responses-proxy/internal/auth"
 	"openai-responses-proxy/internal/config"
 	"openai-responses-proxy/internal/logging"
+	"openai-responses-proxy/internal/testutil"
 )
 
 // Reload accepts a complete valid users file, rejects duplicates without replacing active keys, and uses a private socket.
 func TestReloadActivatesOnlyValidUsersAndUsesPrivateSocket(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "state")
+	root := testutil.ShortTempDir(t)
+	stateDir := filepath.Join(root, "state")
 	if err := EnsureStateDir(stateDir); err != nil {
 		t.Fatal(err)
 	}
 	if got := mode(t, stateDir); got != 0700 {
 		t.Fatalf("state directory mode = %04o, want 0700", got)
 	}
-	usersPath := filepath.Join(t.TempDir(), "users.yaml")
+	usersPath := filepath.Join(root, "users.yaml")
 	writeUsers(t, usersPath, "alice", "alice-old")
 	initial, err := config.LoadUsers(usersPath)
 	if err != nil {
@@ -84,7 +86,7 @@ func TestReloadActivatesOnlyValidUsersAndUsesPrivateSocket(t *testing.T) {
 
 // State setup rejects a symlink directory, and startup preserves a regular file at the reload socket path.
 func TestEnsureStateDirRejectsSymlinkAndReloadRejectsNonSocket(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.ShortTempDir(t)
 	target := filepath.Join(root, "target")
 	if err := os.Mkdir(target, 0700); err != nil {
 		t.Fatal(err)
