@@ -31,7 +31,7 @@ if command -v git >/dev/null 2>&1; then
 	fi
 fi
 
-ldflags="-X main.version=$version -X main.buildTime=$build_time"
+ldflags="-s -w -X main.version=$version -X main.buildTime=$build_time"
 
 mkdir -p bin
-go build -ldflags "$ldflags" -o "$repo_root/bin/responses-proxy" ./cmd/responses-proxy
+go build -trimpath -ldflags "$ldflags" -o "$repo_root/bin/responses-proxy" ./cmd/responses-proxy
