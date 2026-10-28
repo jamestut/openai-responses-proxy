@@ -141,6 +141,10 @@ func Load(path string) (Config, error) {
 	baseDir := filepath.Dir(absolute)
 	usersFile := resolvePath(baseDir, raw.UsersFile)
 	stateDir := resolvePath(baseDir, raw.StateDir)
+	headerCommand := raw.Upstream.HeaderCommand
+	if len(headerCommand) > 0 && !filepath.IsAbs(headerCommand[0]) && filepath.Base(headerCommand[0]) != headerCommand[0] {
+		headerCommand[0] = resolvePath(baseDir, headerCommand[0])
+	}
 	caFile := ""
 	if raw.Upstream.CAFile != "" {
 		caFile = resolvePath(baseDir, raw.Upstream.CAFile)
@@ -189,7 +193,7 @@ func Load(path string) (Config, error) {
 	}
 	return Config{
 		Listen:              raw.Listen,
-		Upstream:            Upstream{BaseURL: baseURL.String(), APIKey: raw.Upstream.APIKey, HeaderCommand: raw.Upstream.HeaderCommand, CAFile: caFile},
+		Upstream:            Upstream{BaseURL: baseURL.String(), APIKey: raw.Upstream.APIKey, HeaderCommand: headerCommand, CAFile: caFile},
 		UsersFile:           usersFile,
 		StateDir:            stateDir,
 		Retry:               Retry{Delay: delay, MaxRetries: raw.Retry.MaxRetries},

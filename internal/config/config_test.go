@@ -112,20 +112,34 @@ logging:
 	}
 }
 
-// A header command replaces the static upstream API key and retains its argument boundaries.
+// Header command paths resolve from the config directory while bare names remain available through PATH.
 func TestLoadUpstreamHeaderCommand(t *testing.T) {
 	dir := t.TempDir()
-	contents := `upstream:
+	absoluteHelper := filepath.Join(dir, "bin", "header-helper")
+	tests := []struct {
+		name, executable string
+		want             string
+	}{
+		{name: "relative", executable: "./bin/header-helper", want: filepath.Join(dir, "bin", "header-helper")},
+		{name: "absolute", executable: absoluteHelper, want: absoluteHelper},
+		{name: "bare name", executable: "credential-helper", want: "credential-helper"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contents := `upstream:
   base_url: http://upstream.example/proxy/v1/responses
-  header_command: ["credential-helper", "--format", "authorization"]
+  header_command: ["` + test.executable + `", "--format", "authorization"]
 users_file: ./users.yaml
 `
-	cfg, err := Load(writeConfig(t, dir, contents))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Upstream.APIKey != "" || !reflect.DeepEqual(cfg.Upstream.HeaderCommand, []string{"credential-helper", "--format", "authorization"}) {
-		t.Errorf("upstream credentials = api_key %q, header_command %q", cfg.Upstream.APIKey, cfg.Upstream.HeaderCommand)
+			cfg, err := Load(writeConfig(t, dir, contents))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCommand := []string{test.want, "--format", "authorization"}
+			if cfg.Upstream.APIKey != "" || !reflect.DeepEqual(cfg.Upstream.HeaderCommand, wantCommand) {
+				t.Errorf("upstream credentials = api_key %q, header_command %q, want %q", cfg.Upstream.APIKey, cfg.Upstream.HeaderCommand, wantCommand)
+			}
+		})
 	}
 }
 
