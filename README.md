@@ -94,7 +94,13 @@ During shutdown, the service waits up to `timeouts.shutdown` for handlers to fin
 
 ## Build from source
 
-With Go 1.24 or newer, run `./scripts/build.sh` from the repository root to write `bin/responses-proxy`. Run `bin/responses-proxy version` to display its build information.
+With Go 1.24 or newer, run `./scripts/build.sh` from the repository root to build these binaries in `bin/`:
+
+- `responses-proxy-darwin-arm64`
+- `responses-proxy-linux-arm64`
+- `responses-proxy-linux-x64`
+
+Run the binary for your platform with the `version` command to display its build information.
 
 ## Run tests
 

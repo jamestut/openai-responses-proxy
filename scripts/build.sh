@@ -34,4 +34,6 @@ fi
 ldflags="-s -w -X main.version=$version -X main.buildTime=$build_time"
 
 mkdir -p bin
-go build -trimpath -ldflags "$ldflags" -o "$repo_root/bin/responses-proxy" ./cmd/responses-proxy
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o "$repo_root/bin/responses-proxy-darwin-arm64" ./cmd/responses-proxy
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$ldflags" -o "$repo_root/bin/responses-proxy-linux-arm64" ./cmd/responses-proxy
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o "$repo_root/bin/responses-proxy-linux-x64" ./cmd/responses-proxy
