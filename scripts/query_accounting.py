@@ -38,9 +38,10 @@ def parse_args():
     parser = SafeArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8080", metavar="BASE_URL", help="proxy root URL")
     parser.add_argument("-g", "--group-by", choices=("model", "user", "model,user"), metavar="GROUP_BY", help="model, user, or model,user")
-    token_format = parser.add_mutually_exclusive_group()
-    token_format.add_argument("--human", action="store_true", help="format token counts with k/M/B/T suffixes")
-    token_format.add_argument("--raw", action="store_true", help="print token counts without separators")
+    output_format = parser.add_mutually_exclusive_group()
+    output_format.add_argument("--human", action="store_true", help="format token counts with k/M/B/T suffixes")
+    output_format.add_argument("--raw", action="store_true", help="print token counts without separators")
+    output_format.add_argument("--json", action="store_true", help="print the accounting report as JSON")
     parser.add_argument("-m", "--model")
     parser.add_argument("-u", "--user")
     period = parser.add_mutually_exclusive_group()
@@ -216,13 +217,16 @@ def main():
     try:
         url = endpoint_url(args.base_url, params)
         report = request_report(url, api_key)
-        token_format = "human" if args.human else "raw" if args.raw else "comma"
-        lines = render_report(report, args.group_by, token_format)
+        if args.json:
+            output = json.dumps(report, indent=2)
+        else:
+            token_format = "human" if args.human else "raw" if args.raw else "comma"
+            output = "\n".join(render_report(report, args.group_by, token_format))
     except (ValueError, RuntimeError) as exc:
         print(f"query_accounting.py: {exc}", file=sys.stderr)
         return 1
 
-    print("\n".join(lines))
+    print(output)
     return 0
 
 
